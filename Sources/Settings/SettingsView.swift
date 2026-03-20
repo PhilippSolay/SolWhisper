@@ -12,8 +12,8 @@ struct SettingsView: View {
     @AppStorage("hotkeyModifierMask") private var hotkeyModifierMask  = 10
     @AppStorage("audioEnhancement")   private var audioEnhancement    = true
 
-    @State private var deepgramVisible    = false
-    @State private var openRouterVisible  = false
+    @State private var deepgramVisible    = true
+    @State private var openRouterVisible  = true
     @State private var isRecordingHotkey  = false
     @State private var customModelText    = ""
 
@@ -122,23 +122,40 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - API Key Field (copy/paste-friendly + eye toggle)
+// MARK: - API Key Field
+// Always TextField so copy/paste works. Eye button masks display with bullet chars.
 
 private struct APIKeyField: View {
     let label: String
     @Binding var text: String
     @Binding var visible: Bool
 
+    private var displayText: Binding<String> {
+        Binding(
+            get: { visible ? text : String(repeating: "•", count: min(text.count, 32)) },
+            set: { _ in } // read-only when masked; editing handled by real field below
+        )
+    }
+
     var body: some View {
         HStack(spacing: 6) {
-            if visible {
+            ZStack {
+                // Real editable field — always present (enables paste), hidden when masked
                 TextField(label, text: $text)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
-            } else {
-                SecureField(label, text: $text)
-                    .textFieldStyle(.roundedBorder)
+                    .opacity(visible ? 1 : 0)
+
+                // Masked display — shown on top when hidden, not editable
+                if !visible {
+                    TextField(label, text: displayText)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .allowsHitTesting(false)
+                }
             }
+
             Button {
                 visible.toggle()
             } label: {
