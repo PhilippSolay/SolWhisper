@@ -12,8 +12,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let transcriptionController = TranscriptionController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        seedLocalSecrets()
         setupStatusBar()
         setupHotkey()
+    }
+
+    /// Seeds UserDefaults from Resources/local-secrets.json (gitignored, never committed).
+    /// Safe to call repeatedly — only writes if the key is not already set.
+    private func seedLocalSecrets() {
+        guard let url = Bundle.main.url(forResource: "local-secrets", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let secrets = try? JSONDecoder().decode([String: String].self, from: data) else { return }
+
+        for (key, value) in secrets where !value.isEmpty {
+            if (UserDefaults.standard.string(forKey: key) ?? "").isEmpty {
+                UserDefaults.standard.set(value, forKey: key)
+            }
+        }
     }
 
     private func setupStatusBar() {

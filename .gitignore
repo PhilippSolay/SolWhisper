@@ -8,3 +8,6 @@ build/
 *.dSYM
 Pods/
 .build/
+
+# Local secrets — never commit
+Resources/local-secrets.json
