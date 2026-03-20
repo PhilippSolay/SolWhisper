@@ -56,11 +56,15 @@ class OverlayWindowController: NSObject {
 
         let overlayView = RecordingOverlayView(
             transcriptionController: transcriptionController,
-            onStop: { [weak self] in
-                (NSApp.delegate as? AppDelegate)?.stopRecording()
+            onStop: {
+                Task { @MainActor in
+                    (NSApp.delegate as? AppDelegate)?.stopRecording()
+                }
             },
-            onCancel: { [weak self] in
-                (NSApp.delegate as? AppDelegate)?.cancelRecording()
+            onCancel: {
+                Task { @MainActor in
+                    (NSApp.delegate as? AppDelegate)?.cancelRecording()
+                }
             }
         )
 
@@ -69,9 +73,11 @@ class OverlayWindowController: NSObject {
         panel.contentView = hostingView
 
         // ESC key handling
-        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             if event.keyCode == 53 { // ESC
-                (NSApp.delegate as? AppDelegate)?.cancelRecording()
+                Task { @MainActor in
+                    (NSApp.delegate as? AppDelegate)?.cancelRecording()
+                }
                 return nil
             }
             return event

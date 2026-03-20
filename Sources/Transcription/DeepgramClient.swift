@@ -60,7 +60,7 @@ class DeepgramClient: NSObject {
 
     func closeAndWait(completion: @escaping (String?) -> Void) {
         closeCompletion = completion
-        webSocket?.sendCloseCode(.normalClosure) { _ in }
+        webSocket?.cancel(with: .normalClosure, reason: nil)
 
         // Fallback timeout in case EndOfTurn never arrives
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
