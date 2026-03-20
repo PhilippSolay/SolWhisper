@@ -10,6 +10,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkeyManager: HotkeyManager?
 
     let transcriptionController = TranscriptionController()
+    private var previousApp: NSRunningApplication?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         seedLocalSecrets()
@@ -65,6 +66,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func startRecording() {
+        // Capture frontmost app NOW, before the overlay appears
+        previousApp = NSWorkspace.shared.frontmostApplication
+
         if overlayWindowController == nil {
             overlayWindowController = OverlayWindowController(transcriptionController: transcriptionController)
         }
@@ -73,12 +77,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func stopRecording() {
+        let target = previousApp
+        previousApp = nil
+
         transcriptionController.stopRecording { [weak self] text in
             Task { @MainActor in
                 self?.overlayWindowController?.hideOverlay()
-                if let text = text, !text.isEmpty {
-                    PasteManager.paste(text: text)
-                }
+
+                guard let text = text, !text.isEmpty else { return }
+
+                // 1. Wait for overlay fade-out animation (150ms)
+                try? await Task.sleep(nanoseconds: 200_000_000)
+
+                // 2. Re-activate the app that had focus before recording
+                target?.activate(options: .activateIgnoringOtherApps)
+
+                // 3. Wait for it to become key and ready to accept keystrokes
+                try? await Task.sleep(nanoseconds: 100_000_000)
+
+                PasteManager.paste(text: text)
             }
         }
     }

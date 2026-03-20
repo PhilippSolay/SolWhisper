@@ -15,8 +15,8 @@ class OverlayWindowController: NSObject {
         if window == nil {
             createWindow()
         }
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        // orderFront only — don't activate SolWhisper or steal focus from the user's app
+        window?.orderFront(nil)
         animateIn()
     }
 

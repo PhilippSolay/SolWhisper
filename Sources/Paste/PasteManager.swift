@@ -3,48 +3,38 @@ import AppKit
 enum PasteManager {
 
     static func paste(text: String) {
-        // Store original pasteboard content
         let pasteboard = NSPasteboard.general
-        let originalContents = pasteboard.pasteboardItems?.compactMap { item -> (types: [NSPasteboard.PasteboardType], data: [(NSPasteboard.PasteboardType, Data)])? in
-            let types = item.types
-            let data = types.compactMap { type -> (NSPasteboard.PasteboardType, Data)? in
-                guard let d = item.data(forType: type) else { return nil }
-                return (type, d)
-            }
-            return (types: types, data: data)
-        }
 
-        // Set transcribed text to pasteboard
+        // Save original pasteboard so we can restore it after paste
+        let saved: [(NSPasteboard.PasteboardType, Data)] = pasteboard.pasteboardItems?.flatMap { item in
+            item.types.compactMap { type in
+                item.data(forType: type).map { (type, $0) }
+            }
+        } ?? []
+
+        // Put transcribed text on pasteboard
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
 
-        // Simulate Cmd+V via AppleScript
-        let script = """
-        tell application "System Events"
-            keystroke "v" using command down
-        end tell
-        """
+        // Simulate ⌘V via CGEvent — works with Accessibility permission,
+        // fires into whatever app currently owns the key focus.
+        let src = CGEventSource(stateID: .hidSystemState)
 
-        if let appleScript = NSAppleScript(source: script) {
-            var error: NSDictionary?
-            appleScript.executeAndReturnError(&error)
-            if let error = error {
-                print("PasteManager AppleScript error: \(error)")
-            }
-        }
+        let vDown = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: true)
+        vDown?.flags = .maskCommand
+        vDown?.post(tap: .cghidEventTap)
 
-        // Restore original pasteboard after a short delay
+        let vUp = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: false)
+        vUp?.flags = .maskCommand
+        vUp?.post(tap: .cghidEventTap)
+
+        // Restore original pasteboard after the paste has been processed
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            if let originalContents = originalContents, !originalContents.isEmpty {
-                pasteboard.clearContents()
-                for item in originalContents {
-                    let newItem = NSPasteboardItem()
-                    for (type, data) in item.data {
-                        newItem.setData(data, forType: type)
-                    }
-                    pasteboard.writeObjects([newItem])
-                }
-            }
+            guard !saved.isEmpty else { return }
+            pasteboard.clearContents()
+            let item = NSPasteboardItem()
+            for (type, data) in saved { item.setData(data, forType: type) }
+            pasteboard.writeObjects([item])
         }
     }
 }
