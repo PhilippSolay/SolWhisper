@@ -4,12 +4,13 @@ import AppKit
 // MARK: - Settings View
 
 struct SettingsView: View {
-    @AppStorage("deepgramApiKey")    private var deepgramApiKey    = ""
-    @AppStorage("openRouterApiKey")  private var openRouterApiKey  = ""
-    @AppStorage("openRouterModel")   private var openRouterModel   = "anthropic/claude-haiku-4-5-20251001"
-    @AppStorage("enableLLMPolish")   private var enableLLMPolish   = true
-    @AppStorage("hotkeyKeyCode")     private var hotkeyKeyCode     = 15      // R
-    @AppStorage("hotkeyModifierMask") private var hotkeyModifierMask = 10   // ⌥⌘
+    @AppStorage("deepgramApiKey")     private var deepgramApiKey      = ""
+    @AppStorage("openRouterApiKey")   private var openRouterApiKey    = ""
+    @AppStorage("openRouterModel")    private var openRouterModel     = "anthropic/claude-haiku-4-5-20251001"
+    @AppStorage("enableLLMPolish")    private var enableLLMPolish     = true
+    @AppStorage("hotkeyKeyCode")      private var hotkeyKeyCode       = 15
+    @AppStorage("hotkeyModifierMask") private var hotkeyModifierMask  = 10
+    @AppStorage("audioEnhancement")   private var audioEnhancement    = true
 
     @State private var deepgramVisible    = false
     @State private var openRouterVisible  = false
@@ -38,6 +39,19 @@ struct SettingsView: View {
                     text:    $deepgramApiKey,
                     visible: $deepgramVisible
                 )
+
+                Toggle("Audio enhancement", isOn: $audioEnhancement)
+                if audioEnhancement {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Compression · AGC · Noise gate")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text("Boosts quiet mics, evens out volume spikes, and suppresses background noise before sending to Deepgram.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.top, 2)
+                }
             }
 
             // MARK: LLM Polish

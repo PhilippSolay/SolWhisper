@@ -1,64 +1,109 @@
 import AVFoundation
 
 class AudioEngine {
-    var onAudioData: ((Data) -> Void)?
+    var onAudioData:   ((Data) -> Void)?
     var onLevelUpdate: ((Float) -> Void)?
 
     private let engine = AVAudioEngine()
-    private var levelTimer: Timer?
+    private let mixer  = AVAudioMixerNode()
+
+    // Software processing state
+    private var agcGain: Float = 1.0
+
+    // Tuning constants
+    private let agcTarget:    Float = 0.08   // target RMS  (~-22 dBFS)
+    private let agcMaxGain:   Float = 12.0   // max boost
+    private let agcAttack:    Float = 0.05   // gain ramp-up  per buffer
+    private let agcRelease:   Float = 0.005  // gain ramp-down per buffer
+    private let noiseGate:    Float = 0.004  // gate threshold (~-48 dBFS)
+    private let compThreshold: Float = 0.5   // soft-clip knee (~-6 dBFS)
+    private let compRatio:     Float = 4.0   // compression ratio above knee
+
+    // MARK: - Start
 
     func start() throws {
-        let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
-
-        // Use a compatible format for Deepgram: 16kHz mono PCM16
-        let recordingFormat = AVAudioFormat(
+        let input       = engine.inputNode
+        let inputFormat = input.outputFormat(forBus: 0)
+        let targetFormat = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
-            sampleRate: 16000,
-            channels: 1,
-            interleaved: true
+            sampleRate:   16000,
+            channels:     1,
+            interleaved:  true
         )!
 
-        // Install tap on input — convert to 16kHz mono Int16 for Deepgram
-        let converterNode = AVAudioMixerNode()
-        engine.attach(converterNode)
-        engine.connect(input, to: converterNode, format: format)
+        engine.attach(mixer)
+        engine.connect(input, to: mixer, format: inputFormat)
 
-        converterNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { [weak self] buffer, _ in
-            guard let self = self,
-                  let channelData = buffer.int16ChannelData else { return }
+        mixer.installTap(onBus: 0, bufferSize: 4096, format: targetFormat) { [weak self] buffer, _ in
+            guard let self,
+                  let ch = buffer.int16ChannelData else { return }
 
-            let frameLength = Int(buffer.frameLength)
-            let data = Data(bytes: channelData[0], count: frameLength * 2)
-            self.onAudioData?(data)
+            let n = Int(buffer.frameLength)
+            let enhance = UserDefaults.standard.bool(forKey: "audioEnhancement")
 
-            // RMS level for waveform
+            // --- Measure RMS ---
             var sum: Float = 0
-            for i in 0..<frameLength {
-                let sample = Float(channelData[0][i]) / Float(Int16.max)
-                sum += sample * sample
+            for i in 0..<n {
+                let s = Float(ch[0][i]) / Float(Int16.max)
+                sum += s * s
             }
-            let rms = sqrt(sum / Float(frameLength))
-            self.onLevelUpdate?(min(rms * 10, 1.0))
+            let rms = sqrt(sum / Float(n))
+
+            // --- Noise gate ---
+            if enhance && rms < self.noiseGate {
+                self.onLevelUpdate?(0)
+                self.onAudioData?(Data(count: n * 2)) // silence
+                return
+            }
+
+            let outData: Data
+
+            if enhance {
+                // --- AGC: steer gain toward target RMS ---
+                if rms * self.agcGain < self.agcTarget {
+                    self.agcGain = min(self.agcGain * (1 + self.agcAttack), self.agcMaxGain)
+                } else {
+                    self.agcGain = max(self.agcGain * (1 - self.agcRelease), 1.0)
+                }
+
+                // --- Compress + apply gain ---
+                var out = [Int16](repeating: 0, count: n)
+                for i in 0..<n {
+                    var s = Float(ch[0][i]) / Float(Int16.max) * self.agcGain
+
+                    // Soft knee compressor above threshold
+                    let abs_s = abs(s)
+                    if abs_s > self.compThreshold {
+                        let over  = abs_s - self.compThreshold
+                        let compressed = self.compThreshold + over / self.compRatio
+                        s = s < 0 ? -compressed : compressed
+                    }
+
+                    // Hard clip at ±1.0 then scale back to Int16
+                    s = max(-1.0, min(1.0, s))
+                    out[i] = Int16(s * Float(Int16.max))
+                }
+                outData = Data(bytes: out, count: n * 2)
+            } else {
+                outData = Data(bytes: ch[0], count: n * 2)
+            }
+
+            // Level for waveform (post-processing RMS)
+            let displayRMS = enhance ? rms * self.agcGain : rms
+            self.onLevelUpdate?(min(displayRMS * 8, 1.0))
+            self.onAudioData?(outData)
         }
 
         try engine.start()
-
-        levelTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-            // Level updates come from the tap
-        }
     }
 
+    // MARK: - Stop
+
     func stop() {
+        mixer.removeTap(onBus: 0)
         engine.stop()
-        if let input = engine.inputNode as? AVAudioNode? {
-            input?.removeTap(onBus: 0)
-        }
-        engine.inputNode.removeTap(onBus: 0)
-        for node in engine.attachedNodes {
-            engine.detach(node)
-        }
-        levelTimer?.invalidate()
+        for node in engine.attachedNodes { engine.detach(node) }
+        agcGain = 1.0
         onLevelUpdate?(0)
     }
 }
