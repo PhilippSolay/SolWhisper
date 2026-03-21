@@ -108,7 +108,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .frame(width: 500, height: 440)
+        .frame(width: 520, height: 600)
     }
 
     // Map "custom" tag back to the stored free-text value

@@ -11,6 +11,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     let transcriptionController = TranscriptionController()
     private var previousApp: NSRunningApplication?
+    private var escMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         seedLocalSecrets()
@@ -74,11 +75,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         overlayWindowController?.showOverlay()
         transcriptionController.startRecording()
+
+        // Global ESC monitor — fires even when our non-activating panel isn't key
+        escMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 {
+                Task { @MainActor in self?.cancelRecording() }
+            }
+        }
     }
 
     func stopRecording() {
         let target = previousApp
         previousApp = nil
+        removeEscMonitor()
 
         transcriptionController.stopRecording { [weak self] text in
             Task { @MainActor in
@@ -101,8 +110,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func cancelRecording() {
+        removeEscMonitor()
         transcriptionController.cancel()
         overlayWindowController?.hideOverlay()
+    }
+
+    private func removeEscMonitor() {
+        if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil }
     }
 
     @objc func openSettings() {
