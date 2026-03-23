@@ -1,95 +1,110 @@
 import SwiftUI
 
+// MARK: - Overlay root
+
 struct RecordingOverlayView: View {
     @ObservedObject var transcriptionController: TranscriptionController
-    let onStop: () -> Void
+    let onStop:   () -> Void
     let onCancel: () -> Void
 
     @State private var isHovering = false
+    @State private var pulse = false
 
     var body: some View {
         ZStack {
-            // Glass background — frosted blur that adapts to system appearance
-            Capsule()
-                .fill(.ultraThinMaterial)
-            Capsule()
-                .fill(Color.black.opacity(0.25))
-            Capsule()
-                .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)
-
-            VStack(spacing: 0) {
-                // Waveform / transcript area
-                ZStack {
-                    if transcriptionController.liveTranscript.isEmpty {
-                        WaveformView(level: transcriptionController.audioLevel)
-                            .padding(.horizontal, 32)
-                    } else {
-                        Text(transcriptionController.liveTranscript)
-                            .font(.system(size: 15, weight: .regular))
-                            .foregroundColor(.white.opacity(0.9))
-                            .lineLimit(2)
-                            .padding(.horizontal, 32)
-                    }
+            // ── Tahoe GlassEffectContainer (macOS 26+) ───────────────────
+            if #available(macOS 26.0, *) {
+                GlassEffectContainer {
+                    glassContent
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                // Bottom bar — hidden until hover
-                HStack(spacing: 0) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "mic.fill")
-                            .font(.system(size: 12))
-                            .foregroundColor(.white.opacity(0.5))
-                        Text("Default")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white.opacity(0.5))
-                    }
-
-                    Spacer()
-
-                    HStack(spacing: 4) {
-                        Text("Stop")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white.opacity(0.85))
-                        KeyBadge(keys: hotkeyBadgeKeys)
-                    }
-                    .onTapGesture { onStop() }
-                    .padding(.trailing, 14)
-
-                    HStack(spacing: 4) {
-                        Text("Cancel")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white.opacity(0.85))
-                        KeyBadge(keys: ["esc"])
-                    }
-                    .onTapGesture { onCancel() }
-                }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 12)
-                .padding(.top, 2)
-                .opacity(isHovering ? 1 : 0)
-                .animation(.easeInOut(duration: 0.18), value: isHovering)
+            } else {
+                // Fallback: rely on NSVisualEffectView behind us
+                glassContent
+                    .background(.ultraThinMaterial, in: Capsule())
             }
         }
-        .onHover { hovering in
-            isHovering = hovering
-        }
-        .shadow(color: .black.opacity(0.35), radius: 24, x: 0, y: 8)
+        .onHover { isHovering = $0 }
+        .onAppear { withAnimation(.easeInOut(duration: 1.1).repeatForever()) { pulse.toggle() } }
     }
 
-    private var hotkeyBadgeKeys: [String] {
+    // ── Content inside the glass ─────────────────────────────────────────
+    private var glassContent: some View {
+        HStack(spacing: 14) {
+
+            // Recording dot
+            Circle()
+                .fill(Color.red.opacity(pulse ? 0.9 : 0.5))
+                .frame(width: 8, height: 8)
+                .animation(.easeInOut(duration: 1.1).repeatForever(), value: pulse)
+
+            // Waveform or live transcript
+            ZStack {
+                if transcriptionController.liveTranscript.isEmpty {
+                    WaveformView(level: transcriptionController.audioLevel)
+                } else {
+                    Text(transcriptionController.liveTranscript)
+                        .font(.system(size: 14, weight: .regular, design: .rounded))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                        .transition(.opacity.combined(with: .scale(scale: 0.97)))
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .animation(.easeInOut(duration: 0.2), value: transcriptionController.liveTranscript.isEmpty)
+
+            // Controls — fade in on hover
+            HStack(spacing: 10) {
+                ControlButton(label: "Stop", badge: hotkeyLabel, action: onStop)
+                ControlButton(label: "Esc", badge: nil, action: onCancel)
+            }
+            .opacity(isHovering ? 1 : 0)
+            .animation(.easeInOut(duration: 0.15), value: isHovering)
+        }
+        .padding(.horizontal, 20)
+        .frame(height: 64)
+    }
+
+    private var hotkeyLabel: String {
         let mask = UserDefaults.standard.integer(forKey: "hotkeyModifierMask")
         let code = UserDefaults.standard.integer(forKey: "hotkeyKeyCode")
-        var keys: [String] = []
-        if mask & 1 != 0 { keys.append("⌃") }
-        if mask & 2 != 0 { keys.append("⌥") }
-        if mask & 4 != 0 { keys.append("⇧") }
-        if mask & 8 != 0 { keys.append("⌘") }
-        keys.append(keyCodeToString(code))
-        return keys.isEmpty ? ["⌥", "⌘", "R"] : keys
+        var s = ""
+        if mask & 1 != 0 { s += "⌃" }
+        if mask & 2 != 0 { s += "⌥" }
+        if mask & 4 != 0 { s += "⇧" }
+        if mask & 8 != 0 { s += "⌘" }
+        s += keyCodeToString(code)
+        return s.isEmpty ? "⌥⌘R" : s
     }
 }
 
-// MARK: - Waveform View
+// MARK: - Control button
+
+private struct ControlButton: View {
+    let label: String
+    let badge: String?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Text(label)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                if let badge {
+                    Text(badge)
+                        .font(.system(size: 10, weight: .medium))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(.white.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
+                }
+            }
+            .foregroundStyle(.primary.opacity(0.8))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Waveform
 
 struct WaveformView: View {
     let level: Float
@@ -97,52 +112,42 @@ struct WaveformView: View {
     @State private var phase1: Double = 0
     @State private var phase2: Double = 0
     @State private var phase3: Double = 0
-    @State private var smoothedLevel: Double = 0
+    @State private var smoothed: Double = 0
 
     var body: some View {
-        Canvas { context, size in
-            drawWave(context: context, size: size,
-                     phase: phase1, frequency: 2.5,
-                     amplitudeScale: 1.0, opacity: 0.5, lineWidth: 1.5)
-            drawWave(context: context, size: size,
-                     phase: phase2, frequency: 4.0,
-                     amplitudeScale: 0.65, opacity: 0.3, lineWidth: 1.0)
-            drawWave(context: context, size: size,
-                     phase: phase3, frequency: 6.5,
-                     amplitudeScale: 0.35, opacity: 0.2, lineWidth: 0.75)
+        Canvas { ctx, size in
+            draw(ctx, size, phase: phase1, freq: 2.4, ampScale: 1.00, opacity: 0.55, width: 1.5)
+            draw(ctx, size, phase: phase2, freq: 3.8, ampScale: 0.60, opacity: 0.30, width: 1.0)
+            draw(ctx, size, phase: phase3, freq: 6.2, ampScale: 0.30, opacity: 0.18, width: 0.7)
         }
-        .frame(height: 36)
-        .onChange(of: level) { newLevel in
-            withAnimation(.spring(response: 0.12, dampingFraction: 0.7)) {
-                smoothedLevel = Double(newLevel)
-            }
+        .onChange(of: level) { v in
+            withAnimation(.spring(response: 0.1, dampingFraction: 0.65)) { smoothed = Double(v) }
         }
         .onAppear {
-            withAnimation(.linear(duration: 2.8).repeatForever(autoreverses: false)) { phase1 = .pi * 2 }
-            withAnimation(.linear(duration: 1.9).repeatForever(autoreverses: false)) { phase2 = .pi * 2 }
-            withAnimation(.linear(duration: 1.3).repeatForever(autoreverses: false)) { phase3 = .pi * 2 }
+            withAnimation(.linear(duration: 2.8).repeatForever(autoreverses: false)) { phase1 = .pi*2 }
+            withAnimation(.linear(duration: 1.9).repeatForever(autoreverses: false)) { phase2 = .pi*2 }
+            withAnimation(.linear(duration: 1.3).repeatForever(autoreverses: false)) { phase3 = .pi*2 }
         }
     }
 
-    private func drawWave(context: GraphicsContext, size: CGSize,
-                          phase: Double, frequency: Double,
-                          amplitudeScale: Double, opacity: Double, lineWidth: CGFloat) {
-        let base = smoothedLevel < 0.02 ? 2.5 : CGFloat(smoothedLevel) * 20
-        let amp  = base * CGFloat(amplitudeScale)
+    private func draw(_ ctx: GraphicsContext, _ size: CGSize,
+                      phase: Double, freq: Double,
+                      ampScale: Double, opacity: Double, width: CGFloat) {
+        let amp  = (smoothed < 0.02 ? 3.0 : smoothed * 18) * ampScale
         let midY = size.height / 2
         var path = Path()
-        let segs = 100
-        for i in 0...segs {
-            let x = size.width * CGFloat(i) / CGFloat(segs)
-            let y = midY + amp * CGFloat(sin(Double(i) / Double(segs) * .pi * 2 * frequency + phase))
+        let n    = 120
+        for i in 0...n {
+            let x = size.width * Double(i) / Double(n)
+            let y = midY + amp * sin(Double(i) / Double(n) * .pi * 2 * freq + phase)
             i == 0 ? path.move(to: CGPoint(x: x, y: y)) : path.addLine(to: CGPoint(x: x, y: y))
         }
-        context.stroke(path, with: .color(.white.opacity(opacity)),
-                       style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, dash: [3, 4]))
+        ctx.stroke(path, with: .color(.primary.opacity(opacity)),
+                   style: StrokeStyle(lineWidth: width, lineCap: .round, dash: [2.5, 4]))
     }
 }
 
-// MARK: - Key Badge
+// MARK: - Key Badge (used in Settings)
 
 struct KeyBadge: View {
     let keys: [String]
@@ -152,13 +157,14 @@ struct KeyBadge: View {
                 Text(key)
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.white.opacity(0.6))
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 3)
+                    .padding(.horizontal, 5).padding(.vertical, 3)
                     .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.12)))
             }
         }
     }
 }
+
+// MARK: - Shared key code helper
 
 func keyCodeToString(_ code: Int) -> String {
     let map: [Int: String] = [
