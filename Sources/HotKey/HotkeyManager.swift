@@ -1,73 +1,61 @@
-import Carbon
 import AppKit
 
+/// Global hotkey using NSEvent monitors.
+/// Simpler and more reliable than CGEvent tap for unsigned apps.
+/// Global monitor fires when other apps are frontmost; local covers when SolWhisper is.
 class HotkeyManager {
 
     var onHotkeyPressed: (() -> Void)?
 
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
+    private var globalMonitor: Any?
+    private var localMonitor:  Any?
 
-    // Read live from UserDefaults so hotkey changes take effect without restart
-    private var targetKeyCode: CGKeyCode {
+    // Read live so hotkey changes in Settings take effect immediately
+    private var targetKeyCode: UInt16 {
         let stored = UserDefaults.standard.integer(forKey: "hotkeyKeyCode")
-        return CGKeyCode(stored != 0 ? stored : 15) // default: R
+        return UInt16(stored != 0 ? stored : 15) // default: R
     }
 
-    private var targetCGFlags: CGEventFlags {
+    private var targetModifiers: NSEvent.ModifierFlags {
         let mask = UserDefaults.standard.integer(forKey: "hotkeyModifierMask")
         let effective = mask != 0 ? mask : 10 // default: ⌥⌘
-        return cgFlagsFromMask(effective)
+        var flags: NSEvent.ModifierFlags = []
+        if effective & 1 != 0 { flags.insert(.control) }
+        if effective & 2 != 0 { flags.insert(.option)  }
+        if effective & 4 != 0 { flags.insert(.shift)   }
+        if effective & 8 != 0 { flags.insert(.command) }
+        return flags
     }
 
     func startListening() {
-        let eventMask = CGEventMask(1 << CGEventType.keyDown.rawValue)
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
-
-        let callback: CGEventTapCallBack = { _, type, event, refcon in
-            guard type == .keyDown, let refcon = refcon else {
-                return Unmanaged.passRetained(event)
+        let handler: (NSEvent) -> Void = { [weak self] event in
+            guard let self else { return }
+            let relevantFlags = event.modifierFlags.intersection([.control, .option, .shift, .command])
+            if event.keyCode == self.targetKeyCode && relevantFlags == self.targetModifiers {
+                self.onHotkeyPressed?()
             }
-            let manager = Unmanaged<HotkeyManager>.fromOpaque(refcon).takeUnretainedValue()
-
-            let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-            let flags   = event.flags.intersection([.maskAlternate, .maskCommand, .maskControl, .maskShift])
-
-            if keyCode == manager.targetKeyCode && flags == manager.targetCGFlags {
-                manager.onHotkeyPressed?()
-                return nil // consume
-            }
-            return Unmanaged.passRetained(event)
         }
 
-        eventTap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: eventMask,
-            callback: callback,
-            userInfo: refcon
-        )
-
-        guard let tap = eventTap else {
-            print("HotkeyManager: failed to create event tap — grant Accessibility permission.")
-            requestAccessibilityPermission()
-            return
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { handler($0) }
+        localMonitor  = NSEvent.addLocalMonitorForEvents(matching:  .keyDown) { event in
+            handler(event)
+            return event
         }
 
-        runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
+        if globalMonitor == nil {
+            print("HotkeyManager: global monitor failed — grant Accessibility in System Settings → Privacy → Accessibility")
+            requestAccessibility()
+        } else {
+            print("HotkeyManager: listening for ⌥⌘R (keyCode=\(targetKeyCode) modifiers=\(targetModifiers))")
+        }
     }
 
     func stopListening() {
-        if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: false) }
-        if let src = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), src, .commonModes) }
-        eventTap = nil
-        runLoopSource = nil
+        if let m = globalMonitor { NSEvent.removeMonitor(m); globalMonitor = nil }
+        if let m = localMonitor  { NSEvent.removeMonitor(m); localMonitor  = nil }
     }
 
-    private func requestAccessibilityPermission() {
+    private func requestAccessibility() {
         let opts: NSDictionary = [kAXTrustedCheckOptionPrompt.takeRetainedValue(): true]
         AXIsProcessTrustedWithOptions(opts)
     }
@@ -75,14 +63,12 @@ class HotkeyManager {
     deinit { stopListening() }
 }
 
-// MARK: - Modifier mask conversion
-// Bitmask: bit0=⌃ bit1=⌥ bit2=⇧ bit3=⌘
-
-func cgFlagsFromMask(_ mask: Int) -> CGEventFlags {
-    var flags: CGEventFlags = []
-    if mask & 1 != 0 { flags.insert(.maskControl) }
-    if mask & 2 != 0 { flags.insert(.maskAlternate) }
-    if mask & 4 != 0 { flags.insert(.maskShift) }
-    if mask & 8 != 0 { flags.insert(.maskCommand) }
+// Keep cgFlagsFromMask for Settings display (used in SettingsView)
+func cgFlagsFromMask(_ mask: Int) -> NSEvent.ModifierFlags {
+    var flags: NSEvent.ModifierFlags = []
+    if mask & 1 != 0 { flags.insert(.control) }
+    if mask & 2 != 0 { flags.insert(.option)  }
+    if mask & 4 != 0 { flags.insert(.shift)   }
+    if mask & 8 != 0 { flags.insert(.command) }
     return flags
 }

@@ -10,19 +10,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkeyManager: HotkeyManager?
 
     let transcriptionController = TranscriptionController()
-    private var previousApp: NSRunningApplication?
     private var escMonitor: Any?
+
+    /// Continuously updated — always the last app that had focus before SolWhisper.
+    private var pasteTarget: NSRunningApplication?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UserDefaults.standard.register(defaults: [
-            "enableLLMPolish":  true,
-            "audioEnhancement": true,
-            "hotkeyKeyCode":    15,
+            "enableLLMPolish":    true,
+            "audioEnhancement":   true,
+            "hotkeyKeyCode":      15,
             "hotkeyModifierMask": 10,
         ])
         seedLocalSecrets()
+        trackActiveApp()
         setupStatusBar()
         setupHotkey()
+    }
+
+    /// Observe every app activation and remember the last non-SolWhisper app.
+    private func trackActiveApp() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil, queue: .main
+        ) { [weak self] note in
+            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.bundleIdentifier != Bundle.main.bundleIdentifier else { return }
+            self?.pasteTarget = app
+            print("AppDelegate: paste target → \(app.localizedName ?? "?")")
+        }
     }
 
     /// Seeds UserDefaults from Resources/local-secrets.json (gitignored, never committed).
@@ -73,9 +89,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func startRecording() {
-        // Capture frontmost app NOW, before the overlay appears
-        previousApp = NSWorkspace.shared.frontmostApplication
-
         if overlayWindowController == nil {
             overlayWindowController = OverlayWindowController(transcriptionController: transcriptionController)
         }
@@ -91,9 +104,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func stopRecording() {
-        let target = previousApp
-        previousApp = nil
+        let target = pasteTarget
         removeEscMonitor()
+        print("AppDelegate: stopping — will paste into \(target?.localizedName ?? "unknown")")
 
         transcriptionController.stopRecording { [weak self] text in
             Task { @MainActor in
