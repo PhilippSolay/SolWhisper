@@ -123,6 +123,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // 3. Wait for it to become key and ready to accept keystrokes
                 try? await Task.sleep(nanoseconds: 100_000_000)
 
+                DebugLog.shared.log(icon: "📋", label: "Paste", value: "→ \(target?.localizedName ?? "unknown") · \"\(String(text.prefix(60)))\"")
                 PasteManager.paste(text: text)
             }
         }

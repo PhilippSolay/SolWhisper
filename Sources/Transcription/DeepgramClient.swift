@@ -16,6 +16,9 @@ class DeepgramClient: NSObject {
     private var closeCompletion: ((String?) -> Void)?
     private var accumulatedTranscript = ""
     private var fallbackTimer: DispatchWorkItem?
+    private var connectWatch: Stopwatch?
+    private var firstTranscriptLogged = false
+    private var bytesSent = 0
 
     init(apiKey: String) {
         self.apiKey = apiKey
@@ -49,7 +52,12 @@ class DeepgramClient: NSObject {
         webSocket = session?.webSocketTask(with: request)
         webSocket?.resume()
 
-        print("Deepgram: connecting to \(components.url!)")
+        connectWatch = Stopwatch()
+        bytesSent = 0
+        firstTranscriptLogged = false
+        Task { @MainActor in
+            DebugLog.shared.log(icon: "🎙", label: "Deepgram connecting", value: "nova-3 · 16kHz")
+        }
         receiveLoop()
     }
 
@@ -57,6 +65,7 @@ class DeepgramClient: NSObject {
 
     /// Send raw PCM16 audio as binary frame.
     func send(audioData: Data) {
+        bytesSent += audioData.count
         webSocket?.send(.data(audioData)) { error in
             if let error { print("Deepgram send error: \(error)") }
         }
@@ -71,12 +80,20 @@ class DeepgramClient: NSObject {
         // Send zero-byte binary frame — tells Deepgram to flush & finalize
         webSocket?.send(.data(Data())) { _ in }
 
+        let kb = bytesSent / 1024
+        Task { @MainActor in
+            DebugLog.shared.log(icon: "🎙", label: "Deepgram close sent", value: "\(kb) KB audio")
+        }
+
         // Fallback: if speech_final never arrives, complete after 4s
         let work = DispatchWorkItem { [weak self] in
             guard let self, let cb = self.closeCompletion else { return }
             print("Deepgram: fallback timeout — returning accumulated transcript")
             self.closeCompletion = nil
             let text = self.accumulatedTranscript.trimmingCharacters(in: .whitespaces)
+            Task { @MainActor in
+                DebugLog.shared.log(icon: "🎙", label: "Deepgram timeout fallback", value: text.isEmpty ? "empty" : "\"\(text)\"", ok: text.isEmpty ? false : true)
+            }
             DispatchQueue.main.async { cb(text.isEmpty ? nil : text) }
         }
         fallbackTimer = work
@@ -106,11 +123,14 @@ class DeepgramClient: NSObject {
                 self.receiveLoop()
             case .failure(let error):
                 print("Deepgram receive error: \(error)")
-                // Socket closed — fire completion with whatever we have
                 self.fallbackTimer?.cancel()
                 if let cb = self.closeCompletion {
                     self.closeCompletion = nil
                     let text = self.accumulatedTranscript.trimmingCharacters(in: .whitespaces)
+                    let ms = self.connectWatch?.elapsed
+                    Task { @MainActor in
+                        DebugLog.shared.log(icon: "🎙", label: "Deepgram closed", value: text.isEmpty ? "no transcript" : "\"\(String(text.prefix(60)))\"", ms: ms, ok: !text.isEmpty)
+                    }
                     DispatchQueue.main.async { cb(text.isEmpty ? nil : text) }
                 }
             }
@@ -130,20 +150,36 @@ class DeepgramClient: NSObject {
               let transcript = first["transcript"]  as? String,
               !transcript.isEmpty else { return }
 
-        let isFinal    = (json["is_final"]    as? Bool) ?? false
+        let isFinal     = (json["is_final"]    as? Bool) ?? false
         let speechFinal = (json["speech_final"] as? Bool) ?? false
 
         print("Deepgram ← is_final=\(isFinal) speech_final=\(speechFinal): \"\(transcript)\"")
 
         DispatchQueue.main.async {
+            // Log first transcript arrival (latency from connect)
+            if !self.firstTranscriptLogged {
+                self.firstTranscriptLogged = true
+                let ms = self.connectWatch?.elapsed
+                Task { @MainActor in
+                    DebugLog.shared.log(icon: "🎙", label: "Deepgram first word", value: "\"\(transcript)\"", ms: ms)
+                }
+            }
+
             self.onTranscript?(transcript, isFinal)
             if isFinal {
                 self.accumulatedTranscript += transcript + " "
+                Task { @MainActor in
+                    DebugLog.shared.log(icon: "🎙", label: isFinal ? "Deepgram final" : "Deepgram interim", value: "\"\(transcript)\"")
+                }
             }
             if speechFinal, let cb = self.closeCompletion {
                 self.fallbackTimer?.cancel()
                 self.closeCompletion = nil
                 let text = self.accumulatedTranscript.trimmingCharacters(in: .whitespaces)
+                let ms = self.connectWatch?.elapsed
+                Task { @MainActor in
+                    DebugLog.shared.log(icon: "🎙", label: "Deepgram speech_final", value: "\"\(String(text.prefix(80)))\"", ms: ms)
+                }
                 cb(text.isEmpty ? nil : text)
             }
         }

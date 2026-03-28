@@ -11,6 +11,7 @@ struct SettingsView: View {
     @AppStorage("hotkeyKeyCode")      private var hotkeyKeyCode       = 15
     @AppStorage("hotkeyModifierMask") private var hotkeyModifierMask  = 10
     @AppStorage("audioEnhancement")   private var audioEnhancement    = true
+    @AppStorage("debugMode")          private var debugMode           = false
 
     @State private var deepgramVisible    = true
     @State private var openRouterVisible  = true
@@ -95,6 +96,24 @@ struct SettingsView: View {
                 }
             }
 
+            // MARK: Debug
+            Divider()
+            Section {
+                Toggle("Debug mode", isOn: $debugMode)
+            } header: {
+                Text("Debug")
+            } footer: {
+                Text("Logs API calls, timing, and token usage below.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            if debugMode {
+                Section("Debug Log") {
+                    DebugLogView()
+                        .frame(height: 220)
+                }
+            }
+
             // MARK: About
             Section("About") {
                 HStack {
@@ -108,7 +127,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .frame(width: 520, height: 600)
+        .frame(width: 540, height: debugMode ? 860 : 620)
     }
 
     // Map "custom" tag back to the stored free-text value
@@ -119,6 +138,108 @@ struct SettingsView: View {
                 if newVal != "custom" { openRouterModel = newVal }
             }
         )
+    }
+}
+
+// MARK: - Debug Log View
+
+private struct DebugLogView: View {
+    @ObservedObject private var log = DebugLog.shared
+
+    private static let timeFmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm:ss.SSS"; return f
+    }()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Toolbar
+            HStack {
+                Text("\(log.entries.count) entries")
+                    .font(.system(size: 11)).foregroundColor(.secondary)
+                Spacer()
+                Button("Clear") { log.clear() }
+                    .font(.system(size: 11))
+                    .buttonStyle(.plain)
+                    .foregroundColor(.accentColor)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color(NSColor.controlBackgroundColor))
+
+            Divider()
+
+            if log.entries.isEmpty {
+                Text("No entries yet — start recording to see debug output.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(log.entries) { entry in
+                            DebugRow(entry: entry)
+                            Divider().opacity(0.4)
+                        }
+                    }
+                }
+            }
+        }
+        .background(Color(NSColor.textBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
+    }
+}
+
+private struct DebugRow: View {
+    let entry: LogEntry
+
+    private static let timeFmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm:ss.SSS"; return f
+    }()
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            // Timestamp
+            Text(Self.timeFmt.string(from: entry.timestamp))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(.secondary)
+                .frame(width: 84, alignment: .leading)
+
+            // Icon
+            Text(entry.icon)
+                .font(.system(size: 11))
+
+            // Label + value
+            VStack(alignment: .leading, spacing: 1) {
+                Text(entry.label)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(entry.ok ? .primary : .red)
+                if let val = entry.value {
+                    Text(val)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            // Duration + tokens
+            VStack(alignment: .trailing, spacing: 1) {
+                if let ms = entry.ms {
+                    Text("\(ms)ms")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(ms > 2000 ? .orange : .secondary)
+                }
+                if let tok = entry.tokens {
+                    Text("↑\(tok.prompt) ↓\(tok.completion)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
     }
 }
 
