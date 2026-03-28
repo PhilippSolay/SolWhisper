@@ -1,12 +1,11 @@
 import Foundation
 
-/// Deepgram v2 streaming client.
+/// Deepgram v1 streaming client using nova-3.
 ///
-/// v2 differences from v1:
-/// - Endpoint: wss://api.deepgram.com/v2/listen
-/// - Audio sent as **base64-encoded text** WebSocket frames (not binary)
-/// - Server responses are **base64-encoded JSON** text frames
-/// - Response events: StartOfTurn, transcript payloads, EndOfTurn
+/// Protocol:
+/// - Audio sent as raw binary PCM16 frames
+/// - Responses are plain JSON
+/// - Close: send empty binary frame → wait for speech_final → complete
 class DeepgramClient: NSObject {
 
     var onTranscript: ((String, Bool) -> Void)?
@@ -15,130 +14,137 @@ class DeepgramClient: NSObject {
     private var webSocket: URLSessionWebSocketTask?
     private var session: URLSession?
     private var closeCompletion: ((String?) -> Void)?
-    private var pendingTranscript = ""
+    private var accumulatedTranscript = ""
+    private var fallbackTimer: DispatchWorkItem?
 
     init(apiKey: String) {
         self.apiKey = apiKey
         super.init()
     }
 
+    // MARK: - Connect
+
     func connect() {
         guard !apiKey.isEmpty else {
-            print("Deepgram: no API key set — open Settings to add one.")
+            print("Deepgram: no API key — open Settings.")
             return
         }
 
-        var components = URLComponents(string: "wss://api.deepgram.com/v2/listen")!
+        var components = URLComponents(string: "wss://api.deepgram.com/v1/listen")!
         components.queryItems = [
-            URLQueryItem(name: "model",            value: "flux-general-en"),
-            URLQueryItem(name: "encoding",         value: "linear16"),
-            URLQueryItem(name: "sample_rate",      value: "16000"),
-            URLQueryItem(name: "eot_threshold",    value: "0.7"),
-            URLQueryItem(name: "eot_timeout_ms",   value: "5000"),
+            URLQueryItem(name: "model",           value: "nova-3"),
+            URLQueryItem(name: "language",        value: "en-US"),
+            URLQueryItem(name: "encoding",        value: "linear16"),
+            URLQueryItem(name: "sample_rate",     value: "16000"),
+            URLQueryItem(name: "channels",        value: "1"),
+            URLQueryItem(name: "interim_results", value: "true"),
+            URLQueryItem(name: "smart_format",    value: "true"),
+            URLQueryItem(name: "endpointing",     value: "300"),
         ]
 
         var request = URLRequest(url: components.url!)
         request.setValue("Token \(apiKey)", forHTTPHeaderField: "Authorization")
 
-        session = URLSession(configuration: .default)
+        session   = URLSession(configuration: .default)
         webSocket = session?.webSocketTask(with: request)
         webSocket?.resume()
 
-        receiveMessage()
+        print("Deepgram: connecting to \(components.url!)")
+        receiveLoop()
     }
 
-    /// Send PCM16 audio — v2 requires base64-encoded text frames.
+    // MARK: - Send audio
+
+    /// Send raw PCM16 audio as binary frame.
     func send(audioData: Data) {
-        guard let webSocket = webSocket else { return }
-        let base64 = audioData.base64EncodedString()
-        webSocket.send(.string(base64)) { error in
-            if let error = error {
-                print("Deepgram send error: \(error)")
-            }
+        webSocket?.send(.data(audioData)) { error in
+            if let error { print("Deepgram send error: \(error)") }
         }
     }
 
+    // MARK: - Close
+
+    /// Signal end-of-stream, wait for speech_final, then call completion.
     func closeAndWait(completion: @escaping (String?) -> Void) {
         closeCompletion = completion
-        webSocket?.cancel(with: .normalClosure, reason: nil)
 
-        // Fallback timeout in case EndOfTurn never arrives
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-            guard let self = self, let cb = self.closeCompletion else { return }
+        // Send zero-byte binary frame — tells Deepgram to flush & finalize
+        webSocket?.send(.data(Data())) { _ in }
+
+        // Fallback: if speech_final never arrives, complete after 4s
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let cb = self.closeCompletion else { return }
+            print("Deepgram: fallback timeout — returning accumulated transcript")
             self.closeCompletion = nil
-            cb(self.pendingTranscript.isEmpty ? nil : self.pendingTranscript)
+            let text = self.accumulatedTranscript.trimmingCharacters(in: .whitespaces)
+            DispatchQueue.main.async { cb(text.isEmpty ? nil : text) }
         }
+        fallbackTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: work)
     }
 
     func disconnect() {
+        fallbackTimer?.cancel()
         closeCompletion = nil
         webSocket?.cancel(with: .normalClosure, reason: nil)
         webSocket = nil
     }
 
-    // MARK: - Private
+    // MARK: - Receive loop
 
-    private func receiveMessage() {
+    private func receiveLoop() {
         webSocket?.receive { [weak self] result in
-            guard let self = self else { return }
-
+            guard let self else { return }
             switch result {
-            case .success(let message):
-                switch message {
-                case .string(let raw):
-                    self.handleFrame(raw)
+            case .success(let msg):
+                switch msg {
+                case .string(let text): self.handleJSON(text)
                 case .data(let data):
-                    if let raw = String(data: data, encoding: .utf8) {
-                        self.handleFrame(raw)
-                    }
-                @unknown default:
-                    break
+                    if let text = String(data: data, encoding: .utf8) { self.handleJSON(text) }
+                @unknown default: break
                 }
-                self.receiveMessage()
-
+                self.receiveLoop()
             case .failure(let error):
                 print("Deepgram receive error: \(error)")
+                // Socket closed — fire completion with whatever we have
+                self.fallbackTimer?.cancel()
                 if let cb = self.closeCompletion {
                     self.closeCompletion = nil
-                    DispatchQueue.main.async {
-                        cb(self.pendingTranscript.isEmpty ? nil : self.pendingTranscript)
-                    }
+                    let text = self.accumulatedTranscript.trimmingCharacters(in: .whitespaces)
+                    DispatchQueue.main.async { cb(text.isEmpty ? nil : text) }
                 }
             }
         }
     }
 
-    /// v2 frames are base64-encoded JSON.
-    private func handleFrame(_ raw: String) {
-        // Decode base64 → JSON string
-        let jsonString: String
-        if let decoded = Data(base64Encoded: raw),
-           let str = String(data: decoded, encoding: .utf8) {
-            jsonString = str
-        } else {
-            // Already plain JSON (fallback / dev relay)
-            jsonString = raw
-        }
+    // MARK: - Parse response
 
-        guard let data = jsonString.data(using: .utf8),
+    private func handleJSON(_ raw: String) {
+        guard let data = raw.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
 
-        let event = json["event"] as? String
+        // Extract transcript from channel.alternatives[0].transcript
+        guard let channel   = json["channel"]      as? [String: Any],
+              let alts      = channel["alternatives"] as? [[String: Any]],
+              let first     = alts.first,
+              let transcript = first["transcript"]  as? String,
+              !transcript.isEmpty else { return }
 
-        if let transcript = json["transcript"] as? String, !transcript.isEmpty {
-            let isFinal = event == "EndOfTurn"
-            DispatchQueue.main.async {
-                self.onTranscript?(transcript, isFinal)
-                self.pendingTranscript += transcript + " "
+        let isFinal    = (json["is_final"]    as? Bool) ?? false
+        let speechFinal = (json["speech_final"] as? Bool) ?? false
+
+        print("Deepgram ← is_final=\(isFinal) speech_final=\(speechFinal): \"\(transcript)\"")
+
+        DispatchQueue.main.async {
+            self.onTranscript?(transcript, isFinal)
+            if isFinal {
+                self.accumulatedTranscript += transcript + " "
             }
-        }
-
-        if event == "EndOfTurn" {
-            DispatchQueue.main.async {
-                if let cb = self.closeCompletion {
-                    self.closeCompletion = nil
-                    cb(self.pendingTranscript.trimmingCharacters(in: .whitespaces))
-                }
+            if speechFinal, let cb = self.closeCompletion {
+                self.fallbackTimer?.cancel()
+                self.closeCompletion = nil
+                let text = self.accumulatedTranscript.trimmingCharacters(in: .whitespaces)
+                cb(text.isEmpty ? nil : text)
             }
         }
     }

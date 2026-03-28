@@ -14,6 +14,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var escMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        UserDefaults.standard.register(defaults: [
+            "enableLLMPolish":  true,
+            "audioEnhancement": true,
+            "hotkeyKeyCode":    15,
+            "hotkeyModifierMask": 10,
+        ])
         seedLocalSecrets()
         setupStatusBar()
         setupHotkey()
