@@ -120,7 +120,7 @@ struct WaveformView: View {
             draw(ctx, size, phase: phase2, freq: 3.8, ampScale: 0.60, opacity: 0.30, width: 1.0)
             draw(ctx, size, phase: phase3, freq: 6.2, ampScale: 0.30, opacity: 0.18, width: 0.7)
         }
-        .onChange(of: level) { v in
+        .onChange(of: level) { [self] v in
             withAnimation(.spring(response: 0.1, dampingFraction: 0.65)) { smoothed = Double(v) }
         }
         .onAppear {

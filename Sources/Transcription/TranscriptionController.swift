@@ -11,12 +11,10 @@ class TranscriptionController: ObservableObject {
     private var audioEngine: AudioEngine?
     private var deepgramClient: DeepgramClient?
     private var completionHandler: ((String?) -> Void)?
-    private var fullTranscript = ""
 
     func startRecording() {
         guard !isRecording else { return }
 
-        fullTranscript = ""
         liveTranscript = ""
         isRecording = true
 
@@ -26,9 +24,6 @@ class TranscriptionController: ObservableObject {
         deepgramClient?.onTranscript = { [weak self] text, isFinal in
             Task { @MainActor in
                 self?.liveTranscript = text
-                if isFinal {
-                    self?.fullTranscript += text + " "
-                }
             }
         }
 
@@ -66,7 +61,7 @@ class TranscriptionController: ObservableObject {
                 guard let self = self else { return }
                 self.isRecording = false
 
-                let combined = (self.fullTranscript + (finalText ?? "")).trimmingCharacters(in: .whitespaces)
+                let combined = (finalText ?? "").trimmingCharacters(in: .whitespaces)
 
                 if UserDefaults.standard.bool(forKey: "enableLLMPolish") {
                     let polisher = OpenRouterClient()
@@ -85,6 +80,5 @@ class TranscriptionController: ObservableObject {
         deepgramClient?.disconnect()
         isRecording = false
         liveTranscript = ""
-        fullTranscript = ""
     }
 }

@@ -13,7 +13,8 @@ class AudioEngine {
         sampleRate: 16000, channels: 1, interleaved: true
     )!
 
-    // Software processing state
+    // Software processing state — enhancementEnabled cached at start() to avoid UserDefaults reads on audio thread
+    private var enhancementEnabled = false
     private var agcGain: Float = 1.0
     private let agcTarget:     Float = 0.08
     private let agcMaxGain:    Float = 12.0
@@ -34,6 +35,7 @@ class AudioEngine {
             throw AudioEngineError.converterFailed
         }
         converter = conv
+        enhancementEnabled = UserDefaults.standard.bool(forKey: "audioEnhancement")
 
         engine.attach(mixer)
         engine.connect(input, to: mixer, format: inputFormat)
@@ -83,7 +85,7 @@ class AudioEngine {
               let channelData = outBuffer.int16ChannelData else { return }
 
         let n       = Int(outBuffer.frameLength)
-        let enhance = UserDefaults.standard.bool(forKey: "audioEnhancement")
+        let enhance = enhancementEnabled
 
         // RMS
         var sum: Float = 0

@@ -155,7 +155,8 @@ class DeepgramClient: NSObject {
 
         print("Deepgram ← is_final=\(isFinal) speech_final=\(speechFinal): \"\(transcript)\"")
 
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
             // Log first transcript arrival (latency from connect)
             if !self.firstTranscriptLogged {
                 self.firstTranscriptLogged = true
@@ -169,7 +170,7 @@ class DeepgramClient: NSObject {
             if isFinal {
                 self.accumulatedTranscript += transcript + " "
                 Task { @MainActor in
-                    DebugLog.shared.log(icon: "🎙", label: isFinal ? "Deepgram final" : "Deepgram interim", value: "\"\(transcript)\"")
+                    DebugLog.shared.log(icon: "🎙", label: "Deepgram final", value: "\"\(transcript)\"")
                 }
             }
             if speechFinal, let cb = self.closeCompletion {
