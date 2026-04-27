@@ -1,8 +1,11 @@
 import AVFoundation
+import Accelerate
 
 class AudioEngine {
     var onAudioData:   ((Data) -> Void)?
     var onLevelUpdate: ((Float) -> Void)?
+    /// Delivers frequency magnitude bins (0…1 normalized), count = fftBinCount
+    var onSpectrumUpdate: (([Float]) -> Void)?
 
     private let engine    = AVAudioEngine()
     private let mixer     = AVAudioMixerNode()
@@ -13,7 +16,7 @@ class AudioEngine {
         sampleRate: 16000, channels: 1, interleaved: true
     )!
 
-    // Software processing state — enhancementEnabled cached at start() to avoid UserDefaults reads on audio thread
+    // Software processing state
     private var enhancementEnabled = false
     private var agcGain: Float = 1.0
     private let agcTarget:     Float = 0.08
@@ -24,23 +27,36 @@ class AudioEngine {
     private let compThreshold: Float = 0.5
     private let compRatio:     Float = 4.0
 
+    // FFT state — accessed from audio thread, protected by fftQueue
+    static let fftBinCount = 32
+    private let fftSize = 1024
+    private let fftQueue = DispatchQueue(label: "solwhisper.fft", qos: .userInteractive)
+    private var fftSetup: vDSP_DFT_Setup?
+    private var fftWindow = [Float]()
+    private var fftAccum  = [Float](repeating: 0, count: 32)
+    private var nativeSampleRate: Double = 48000
+
     // MARK: - Start
 
     func start() throws {
         let input       = engine.inputNode
-        let inputFormat = input.outputFormat(forBus: 0) // native: e.g. 48kHz Float32
+        let inputFormat = input.outputFormat(forBus: 0)
 
-        // Converter: native mic format → 16kHz Int16 mono
         guard let conv = AVAudioConverter(from: inputFormat, to: targetFormat) else {
             throw AudioEngineError.converterFailed
         }
         converter = conv
         enhancementEnabled = UserDefaults.standard.bool(forKey: "audioEnhancement")
+        nativeSampleRate = inputFormat.sampleRate
+
+        // Setup FFT
+        fftSetup = vDSP_DFT_zop_CreateSetup(nil, vDSP_Length(fftSize), .FORWARD)
+        fftWindow = [Float](repeating: 0, count: fftSize)
+        vDSP_hann_window(&fftWindow, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
 
         engine.attach(mixer)
         engine.connect(input, to: mixer, format: inputFormat)
 
-        // Tap in the NATIVE format — no format mismatch
         mixer.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
             self?.processBuffer(buffer)
         }
@@ -48,29 +64,41 @@ class AudioEngine {
         try engine.start()
     }
 
+    /// When true, audio buffers are silently dropped (no data/level/spectrum callbacks).
+    var isPaused = false
+
     // MARK: - Stop
 
     func stop() {
         mixer.removeTap(onBus: 0)
         engine.stop()
-        engine.detach(mixer)   // only detach what we attached
+        engine.detach(mixer)
         converter = nil
         agcGain   = 1.0
+        fftSetup  = nil
         onLevelUpdate?(0)
+        onSpectrumUpdate?([Float](repeating: 0, count: Self.fftBinCount))
     }
+
+    deinit { stop() }
 
     // MARK: - Buffer processing
 
     private func processBuffer(_ inputBuffer: AVAudioPCMBuffer) {
         guard let converter = converter else { return }
+        if isPaused { return }
 
-        // Calculate output frame count proportional to sample rate ratio
+        // Run FFT on the raw float buffer (native format) for UI
+        if let floatData = inputBuffer.floatChannelData {
+            computeSpectrum(floatData[0], frameCount: Int(inputBuffer.frameLength))
+        }
+
+        // Convert to 16kHz Int16 for STT
         let ratio       = targetFormat.sampleRate / inputBuffer.format.sampleRate
         let outputFrames = AVAudioFrameCount(Double(inputBuffer.frameLength) * ratio) + 2
 
         guard let outBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outputFrames) else { return }
 
-        // Feed the input buffer once to the converter
         var inputProvided = false
         var convError: NSError?
 
@@ -129,6 +157,71 @@ class AudioEngine {
         let displayRMS = min((enhance ? rms * agcGain : rms) * 8, 1.0)
         onLevelUpdate?(displayRMS)
         onAudioData?(outData)
+    }
+
+    // MARK: - FFT Spectrum
+
+    private func computeSpectrum(_ samples: UnsafePointer<Float>, frameCount: Int) {
+        guard let setup = fftSetup else { return }
+        let count = min(frameCount, fftSize)
+
+        // Copy + window
+        var windowed = [Float](repeating: 0, count: fftSize)
+        for i in 0..<count {
+            windowed[i] = samples[i] * fftWindow[i]
+        }
+
+        // Split complex for DFT
+        var realIn  = [Float](repeating: 0, count: fftSize)
+        var imagIn  = [Float](repeating: 0, count: fftSize)
+        var realOut = [Float](repeating: 0, count: fftSize)
+        var imagOut = [Float](repeating: 0, count: fftSize)
+
+        realIn = windowed
+
+        vDSP_DFT_Execute(setup, &realIn, &imagIn, &realOut, &imagOut)
+
+        // Magnitude of first half (Nyquist)
+        let halfN = fftSize / 2
+        var magnitudes = [Float](repeating: 0, count: halfN)
+        for i in 0..<halfN {
+            magnitudes[i] = sqrt(realOut[i] * realOut[i] + imagOut[i] * imagOut[i])
+        }
+
+        // Normalize to 0–1
+        var maxMag: Float = 0
+        vDSP_maxv(magnitudes, 1, &maxMag, vDSP_Length(halfN))
+        if maxMag > 0.001 {
+            var scale = 1.0 / maxMag
+            vDSP_vsmul(magnitudes, 1, &scale, &magnitudes, 1, vDSP_Length(halfN))
+        }
+
+        // Bin down to fftBinCount — only 300 Hz – 3000 Hz (speech range)
+        let binCount  = Self.fftBinCount
+        let hzPerBin  = Float(nativeSampleRate) / Float(fftSize)
+        let loIdx     = max(0, Int(300.0 / hzPerBin))          // ~300 Hz
+        let hiIdx     = min(halfN - 1, Int(3000.0 / hzPerBin)) // ~3000 Hz
+        let rangeLen  = Float(max(1, hiIdx - loIdx))
+
+        var bins = [Float](repeating: 0, count: binCount)
+        for b in 0..<binCount {
+            // Log-spaced mapping within the 300–3000 Hz window
+            let fLo = Float(loIdx) + pow(Float(b)     / Float(binCount), 1.6) * rangeLen
+            let fHi = Float(loIdx) + pow(Float(b + 1) / Float(binCount), 1.6) * rangeLen
+            let lo  = max(loIdx, Int(fLo))
+            let hi  = min(hiIdx, max(lo + 1, Int(fHi)))
+            var sum: Float = 0
+            for j in lo..<hi { sum += magnitudes[j] }
+            bins[b] = sum / Float(max(1, hi - lo))
+        }
+
+        // Smooth with previous frame (temporal smoothing)
+        let smooth: Float = 0.3
+        for i in 0..<binCount {
+            fftAccum[i] = fftAccum[i] * smooth + bins[i] * (1 - smooth)
+        }
+
+        onSpectrumUpdate?(fftAccum)
     }
 }
 

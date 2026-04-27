@@ -1,164 +1,264 @@
 import SwiftUI
 
-// MARK: - Overlay root
+// MARK: - Phase State
+
+@MainActor
+final class OverlayPhaseState: ObservableObject {
+    enum Phase: Equatable { case circle, pill, listening, paused, processing }
+    @Published var phase: Phase = .circle
+    var onAccept: (() -> Void)?
+    var onCancel: (() -> Void)?
+    var onResume: (() -> Void)?
+}
+
+// MARK: - Root overlay view
 
 struct RecordingOverlayView: View {
     @ObservedObject var transcriptionController: TranscriptionController
-    let onStop:   () -> Void
-    let onCancel: () -> Void
+    @ObservedObject var phaseState: OverlayPhaseState
 
     @State private var isHovering = false
-    @State private var pulse = false
+
+    // Design sizes
+    static let circleSize: CGFloat  = 56
+    static let pillWidth:  CGFloat  = 120
+    static let pillHeight: CGFloat  = 48
+    static let hoverWidth: CGFloat  = 180
 
     var body: some View {
         ZStack {
-            // ── Tahoe GlassEffectContainer (macOS 26+) ───────────────────
-            if #available(macOS 26.0, *) {
-                GlassEffectContainer {
-                    glassContent
-                }
-            } else {
-                // Fallback: rely on NSVisualEffectView behind us
-                glassContent
-                    .background(.ultraThinMaterial, in: Capsule())
+            switch phaseState.phase {
+            case .circle:
+                circlePhase
+            case .pill, .listening:
+                listeningPhase
+            case .paused:
+                pausedPhase
+            case .processing:
+                processingPhase
             }
         }
+        .animation(.spring(response: 0.32, dampingFraction: 0.78), value: phaseState.phase)
         .onHover { isHovering = $0 }
-        .onAppear { withAnimation(.easeInOut(duration: 1.1).repeatForever()) { pulse.toggle() } }
     }
 
-    // ── Content inside the glass ─────────────────────────────────────────
-    private var glassContent: some View {
-        HStack(spacing: 14) {
+    // MARK: - 1. Circle phase — mic icon
 
-            // Recording dot
+    private var circlePhase: some View {
+        ZStack {
             Circle()
-                .fill(Color.red.opacity(pulse ? 0.9 : 0.5))
-                .frame(width: 8, height: 8)
-                .animation(.easeInOut(duration: 1.1).repeatForever(), value: pulse)
-
-            // Waveform or live transcript
-            ZStack {
-                if transcriptionController.liveTranscript.isEmpty {
-                    WaveformView(level: transcriptionController.audioLevel)
-                } else {
-                    Text(transcriptionController.liveTranscript)
-                        .font(.system(size: 14, weight: .regular, design: .rounded))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                        .transition(.opacity.combined(with: .scale(scale: 0.97)))
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .animation(.easeInOut(duration: 0.2), value: transcriptionController.liveTranscript.isEmpty)
-
-            // Controls — fade in on hover
-            HStack(spacing: 10) {
-                ControlButton(label: "Stop", badge: hotkeyLabel, action: onStop)
-                ControlButton(label: "Esc", badge: nil, action: onCancel)
-            }
-            .opacity(isHovering ? 1 : 0)
-            .animation(.easeInOut(duration: 0.15), value: isHovering)
+                .fill(Color(white: 0.16))
+            Image(systemName: "mic.fill")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundColor(Color(white: 0.65))
         }
-        .padding(.horizontal, 20)
-        .frame(height: 64)
+        .frame(width: Self.circleSize, height: Self.circleSize)
     }
 
-    private var hotkeyLabel: String {
-        let mask = UserDefaults.standard.integer(forKey: "hotkeyModifierMask")
-        let code = UserDefaults.standard.integer(forKey: "hotkeyKeyCode")
-        var s = ""
-        if mask & 1 != 0 { s += "⌃" }
-        if mask & 2 != 0 { s += "⌥" }
-        if mask & 4 != 0 { s += "⇧" }
-        if mask & 8 != 0 { s += "⌘" }
-        s += keyCodeToString(code)
-        return s.isEmpty ? "⌥⌘R" : s
+    // MARK: - 3. Listening phase — waveform + hover actions
+
+    private var listeningPhase: some View {
+        ZStack {
+            // Dark pill background
+            RoundedRectangle(cornerRadius: Self.pillHeight / 2)
+                .fill(Color(white: 0.12, opacity: 0.94))
+
+            if isHovering {
+                // Hover state: X — waveform — ✓
+                HStack(spacing: 0) {
+                    // Cancel button (left)
+                    Button {
+                        phaseState.onCancel?()
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .fill(Color.white.opacity(0.08))
+                                .frame(width: 32, height: 32)
+                            Image(systemName: "xmark")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(Color(white: 0.55))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.leading, 8)
+
+                    Spacer(minLength: 2)
+
+                    // Waveform (center, compact)
+                    SpectrumWaveformView(bins: transcriptionController.spectrumBins, barCount: 9)
+                        .frame(width: 54, height: 26)
+
+                    Spacer(minLength: 2)
+
+                    // Accept button (right)
+                    Button {
+                        phaseState.onAccept?()
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .fill(Color.white.opacity(0.12))
+                                .frame(width: 32, height: 32)
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.white)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 8)
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.92)))
+            } else {
+                // Normal state: waveform only
+                SpectrumWaveformView(bins: transcriptionController.spectrumBins, barCount: 13)
+                    .frame(width: 80, height: 28)
+                    .transition(.opacity)
+            }
+        }
+        .frame(
+            width: isHovering ? Self.hoverWidth : Self.pillWidth,
+            height: Self.pillHeight
+        )
+        .animation(.spring(response: 0.28, dampingFraction: 0.82), value: isHovering)
+    }
+
+    // MARK: - 4. Paused phase — pause icon, hover: play + cancel
+
+    private var pausedPhase: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: Self.pillHeight / 2)
+                .fill(Color(white: 0.12, opacity: 0.94))
+
+            if isHovering {
+                HStack(spacing: 0) {
+                    // Cancel (left)
+                    Button {
+                        phaseState.onCancel?()
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .fill(Color.white.opacity(0.08))
+                                .frame(width: 32, height: 32)
+                            Image(systemName: "xmark")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(Color(white: 0.55))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.leading, 8)
+
+                    Spacer()
+
+                    // Resume (right)
+                    Button {
+                        phaseState.onResume?()
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .fill(Color.white.opacity(0.12))
+                                .frame(width: 32, height: 32)
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.white)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 8)
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.92)))
+            } else {
+                // Pause icon
+                Image(systemName: "pause.fill")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundColor(Color(white: 0.55))
+                    .transition(.opacity)
+            }
+        }
+        .frame(
+            width: isHovering ? Self.hoverWidth : Self.pillWidth,
+            height: Self.pillHeight
+        )
+        .animation(.spring(response: 0.28, dampingFraction: 0.82), value: isHovering)
+    }
+
+    // MARK: - 5. Processing phase — animated dots
+
+    private var processingPhase: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: Self.pillHeight / 2)
+                .fill(Color(white: 0.12, opacity: 0.94))
+            ProcessingDotsView()
+                .frame(width: 70, height: 20)
+        }
+        .frame(width: Self.pillWidth, height: Self.pillHeight)
     }
 }
 
-// MARK: - Control button
+// MARK: - Spectrum Waveform View (real FFT data)
 
-private struct ControlButton: View {
-    let label: String
-    let badge: String?
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 4) {
-                Text(label)
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
-                if let badge {
-                    Text(badge)
-                        .font(.system(size: 10, weight: .medium))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(.white.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
-                }
-            }
-            .foregroundStyle(.primary.opacity(0.8))
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-// MARK: - Waveform
-
-struct WaveformView: View {
-    let level: Float
-
-    @State private var phase1: Double = 0
-    @State private var phase2: Double = 0
-    @State private var phase3: Double = 0
-    @State private var smoothed: Double = 0
+struct SpectrumWaveformView: View {
+    let bins: [Float]   // real FFT magnitude bins from AudioEngine
+    var barCount: Int = 13
 
     var body: some View {
         Canvas { ctx, size in
-            draw(ctx, size, phase: phase1, freq: 2.4, ampScale: 1.00, opacity: 0.55, width: 1.5)
-            draw(ctx, size, phase: phase2, freq: 3.8, ampScale: 0.60, opacity: 0.30, width: 1.0)
-            draw(ctx, size, phase: phase3, freq: 6.2, ampScale: 0.30, opacity: 0.18, width: 0.7)
-        }
-        .onChange(of: level) { [self] v in
-            withAnimation(.spring(response: 0.1, dampingFraction: 0.65)) { smoothed = Double(v) }
-        }
-        .onAppear {
-            withAnimation(.linear(duration: 2.8).repeatForever(autoreverses: false)) { phase1 = .pi*2 }
-            withAnimation(.linear(duration: 1.9).repeatForever(autoreverses: false)) { phase2 = .pi*2 }
-            withAnimation(.linear(duration: 1.3).repeatForever(autoreverses: false)) { phase3 = .pi*2 }
-        }
-    }
+            let n = barCount
+            let gap: CGFloat = 2.5
+            let totalGap = CGFloat(n - 1) * gap
+            let barW = max(2.5, (size.width - totalGap) / CGFloat(n))
+            let maxH = size.height
+            let binTotal = bins.count
 
-    private func draw(_ ctx: GraphicsContext, _ size: CGSize,
-                      phase: Double, freq: Double,
-                      ampScale: Double, opacity: Double, width: CGFloat) {
-        let amp  = (smoothed < 0.02 ? 3.0 : smoothed * 18) * ampScale
-        let midY = size.height / 2
-        var path = Path()
-        let n    = 120
-        for i in 0...n {
-            let x = size.width * Double(i) / Double(n)
-            let y = midY + amp * sin(Double(i) / Double(n) * .pi * 2 * freq + phase)
-            i == 0 ? path.move(to: CGPoint(x: x, y: y)) : path.addLine(to: CGPoint(x: x, y: y))
+            for i in 0..<n {
+                // Map display bar to FFT bin range (center-weighted selection)
+                let norm = Double(i) / Double(max(1, n - 1))
+                // Pick bins from the lower half of spectrum (speech-relevant freqs)
+                let binIdx = min(binTotal - 1, Int(norm * Double(min(binTotal, 20))))
+                let mag = binTotal > 0 ? CGFloat(bins[binIdx]) : 0
+
+                // Center-weighted envelope so edges are shorter
+                let centerDist = abs(norm - 0.5) * 2.0
+                let envelope = CGFloat(1.0 - centerDist * 0.4)
+
+                let h = max(3, min(maxH, mag * envelope * maxH * 1.2 + 3))
+                let x = CGFloat(i) * (barW + gap)
+                let y = (size.height - h) / 2
+                let rect = CGRect(x: x, y: y, width: barW, height: h)
+                let path = Path(roundedRect: rect, cornerRadius: barW / 2)
+
+                let opacity = 0.35 + Double(mag) * 0.55
+                ctx.fill(path, with: .color(Color.white.opacity(opacity)))
+            }
         }
-        ctx.stroke(path, with: .color(.primary.opacity(opacity)),
-                   style: StrokeStyle(lineWidth: width, lineCap: .round, dash: [2.5, 4]))
     }
 }
 
-// MARK: - Key Badge (used in Settings)
+// MARK: - Processing Dots
 
-struct KeyBadge: View {
-    let keys: [String]
+struct ProcessingDotsView: View {
+    @State private var phase: Double = 0
+    private let dotCount = 6
+
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(keys, id: \.self) { key in
-                Text(key)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.white.opacity(0.6))
-                    .padding(.horizontal, 5).padding(.vertical, 3)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.12)))
+        TimelineView(.animation(minimumInterval: 1 / 30)) { tl in
+            Canvas { ctx, size in
+                let t = tl.date.timeIntervalSinceReferenceDate
+                let dotR: CGFloat = 4
+                let spacing = (size.width - CGFloat(dotCount) * dotR * 2) / CGFloat(dotCount - 1)
+
+                for i in 0..<dotCount {
+                    let x = CGFloat(i) * (dotR * 2 + spacing) + dotR
+                    let y = size.height / 2
+
+                    // Wave animation: each dot pulses with offset
+                    let wave = sin(t * 3.5 - Double(i) * 0.7)
+                    let opacity = 0.25 + max(0, wave) * 0.65
+                    let scale = 0.7 + max(0, wave) * 0.3
+
+                    let r = dotR * CGFloat(scale)
+                    let rect = CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)
+                    ctx.fill(Path(ellipseIn: rect),
+                             with: .color(Color.white.opacity(opacity)))
+                }
             }
         }
     }
@@ -168,13 +268,13 @@ struct KeyBadge: View {
 
 func keyCodeToString(_ code: Int) -> String {
     let map: [Int: String] = [
-        0:"A",1:"S",2:"D",3:"F",4:"H",5:"G",6:"Z",7:"X",8:"C",9:"V",
-        11:"B",12:"Q",13:"W",14:"E",15:"R",16:"Y",17:"T",
-        18:"1",19:"2",20:"3",21:"4",22:"6",23:"5",24:"=",25:"9",
-        26:"7",27:"-",28:"8",29:"0",31:"O",32:"U",34:"I",35:"P",
-        37:"L",38:"J",40:"K",45:"N",46:"M",
-        36:"↩",48:"⇥",49:"Space",51:"⌫",53:"⎋",
-        123:"←",124:"→",125:"↓",126:"↑"
+        0:"A",  1:"S",  2:"D",  3:"F",  4:"H",  5:"G",  6:"Z",  7:"X",  8:"C",  9:"V",
+        11:"B", 12:"Q", 13:"W", 14:"E", 15:"R", 16:"Y", 17:"T",
+        18:"1", 19:"2", 20:"3", 21:"4", 22:"6", 23:"5", 24:"=", 25:"9",
+        26:"7", 27:"-", 28:"8", 29:"0", 31:"O", 32:"U", 34:"I", 35:"P",
+        37:"L", 38:"J", 40:"K", 45:"N", 46:"M",
+        36:"↩", 48:"⇥", 49:"Space", 51:"⌫", 53:"⎋",
+        123:"←", 124:"→", 125:"↓", 126:"↑"
     ]
     return map[code] ?? "(\(code))"
 }

@@ -87,12 +87,10 @@ class DeepgramClient: NSObject {
 
         // Fallback: if speech_final never arrives, complete after 4s
         let work = DispatchWorkItem { [weak self] in
-            guard let self, let cb = self.closeCompletion else { return }
-            print("Deepgram: fallback timeout — returning accumulated transcript")
-            self.closeCompletion = nil
+            guard let self, let cb = self.consumeCloseCompletion() else { return }
             let text = self.accumulatedTranscript.trimmingCharacters(in: .whitespaces)
             Task { @MainActor in
-                DebugLog.shared.log(icon: "🎙", label: "Deepgram timeout fallback", value: text.isEmpty ? "empty" : "\"\(text)\"", ok: text.isEmpty ? false : true)
+                DebugLog.shared.log(icon: "🎙", label: "Deepgram timeout fallback", value: text.isEmpty ? "empty" : "\"\(text)\"", ok: !text.isEmpty)
             }
             DispatchQueue.main.async { cb(text.isEmpty ? nil : text) }
         }
@@ -105,6 +103,16 @@ class DeepgramClient: NSObject {
         closeCompletion = nil
         webSocket?.cancel(with: .normalClosure, reason: nil)
         webSocket = nil
+        session?.invalidateAndCancel()
+        session = nil
+    }
+
+    /// Thread-safe: takes the closeCompletion, nils it, cancels fallback. Returns nil if already consumed.
+    private func consumeCloseCompletion() -> ((String?) -> Void)? {
+        guard let cb = closeCompletion else { return nil }
+        closeCompletion = nil
+        fallbackTimer?.cancel()
+        return cb
     }
 
     // MARK: - Receive loop
@@ -123,9 +131,7 @@ class DeepgramClient: NSObject {
                 self.receiveLoop()
             case .failure(let error):
                 print("Deepgram receive error: \(error)")
-                self.fallbackTimer?.cancel()
-                if let cb = self.closeCompletion {
-                    self.closeCompletion = nil
+                if let cb = self.consumeCloseCompletion() {
                     let text = self.accumulatedTranscript.trimmingCharacters(in: .whitespaces)
                     let ms = self.connectWatch?.elapsed
                     Task { @MainActor in
@@ -173,9 +179,10 @@ class DeepgramClient: NSObject {
                     DebugLog.shared.log(icon: "🎙", label: "Deepgram final", value: "\"\(transcript)\"")
                 }
             }
-            if speechFinal, let cb = self.closeCompletion {
-                self.fallbackTimer?.cancel()
-                self.closeCompletion = nil
+            if speechFinal, let cb = self.consumeCloseCompletion() {
+                if !isFinal && !transcript.isEmpty {
+                    self.accumulatedTranscript += transcript + " "
+                }
                 let text = self.accumulatedTranscript.trimmingCharacters(in: .whitespaces)
                 let ms = self.connectWatch?.elapsed
                 Task { @MainActor in
