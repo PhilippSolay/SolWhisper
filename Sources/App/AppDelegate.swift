@@ -35,6 +35,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             "polishRemoveFiller":   true,
             "polishFixPunctuation": true,
             "polishFixGrammar":     false,
+            "showLiveTranscript":   true,
         ])
         // Migrate any previously stored invalid model IDs
         let storedModel = UserDefaults.standard.string(forKey: "openRouterModel") ?? ""

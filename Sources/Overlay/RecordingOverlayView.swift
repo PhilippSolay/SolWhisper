@@ -11,6 +11,44 @@ final class OverlayPhaseState: ObservableObject {
     var onResume: (() -> Void)?
 }
 
+// MARK: - Transcript Bubble (live transcript display)
+
+struct TranscriptBubbleView: View {
+    @ObservedObject var transcriptionController: TranscriptionController
+
+    static let bubbleWidth:  CGFloat = 460
+    static let minHeight:    CGFloat = 50
+    static let maxHeight:    CGFloat = 200
+    static let cornerRadius: CGFloat = 18
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                Text(transcriptionController.liveTranscript)
+                    .font(.system(size: 15, weight: .regular))
+                    .foregroundColor(.white.opacity(0.95))
+                    .lineSpacing(3)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 14)
+                    .id("end")
+                    .onChange(of: transcriptionController.liveTranscript) { _ in
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            proxy.scrollTo("end", anchor: .bottom)
+                        }
+                    }
+            }
+        }
+        .frame(width: Self.bubbleWidth)
+        .frame(minHeight: Self.minHeight, maxHeight: Self.maxHeight)
+        .background(
+            RoundedRectangle(cornerRadius: Self.cornerRadius)
+                .fill(Color(white: 0.10, opacity: 0.94))
+        )
+    }
+}
+
 // MARK: - Root overlay view
 
 struct RecordingOverlayView: View {

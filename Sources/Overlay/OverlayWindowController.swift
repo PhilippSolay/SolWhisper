@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 @MainActor
@@ -7,6 +8,8 @@ class OverlayWindowController: NSObject {
     private(set) var phaseState = OverlayPhaseState()
 
     private var panel: NSPanel?
+    private var transcriptPanel: NSPanel?
+    private var transcriptCancellable: AnyCancellable?
     private let transcriptionController: TranscriptionController
     private let onStop:   () -> Void
     private let onCancel: () -> Void
@@ -40,6 +43,16 @@ class OverlayWindowController: NSObject {
         phaseState.onAccept = { [weak self] in self?.onStop() }
         phaseState.onCancel = { [weak self] in self?.onCancel() }
         phaseState.onResume = { [weak self] in self?.onPause() }  // toggle
+
+        // React to live transcript / phase changes for the transcript bubble
+        transcriptCancellable = Publishers.CombineLatest(
+            transcriptionController.$liveTranscript,
+            phaseState.$phase
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] text, phase in
+            self?.updateTranscriptBubble(text: text, phase: phase)
+        }
     }
 
     // MARK: - Public API
@@ -66,6 +79,7 @@ class OverlayWindowController: NSObject {
     func hideOverlay() {
         guard !isHiding else { return }
         isHiding = true
+        hideTranscriptBubble()
         animateOut { [weak self] in
             self?.panel?.orderOut(nil)
             self?.isHiding = false
@@ -79,6 +93,7 @@ class OverlayWindowController: NSObject {
         savePosition()
         panel?.alphaValue = 0
         panel?.orderOut(nil)
+        hideTranscriptBubble()
     }
 
     /// Toggle between listening and paused phases
@@ -93,6 +108,7 @@ class OverlayWindowController: NSObject {
     /// Switch to processing dots (called after user accepts)
     func showProcessing() {
         phaseState.phase = .processing
+        hideTranscriptBubble()
         // Shrink back to pill width if hovering expanded it
         guard let panel = panel else { return }
         let newW = pillWidth
@@ -216,6 +232,7 @@ class OverlayWindowController: NSObject {
 
     @objc private func windowDidMove(_ note: Notification) {
         savePosition()
+        repositionTranscriptBubble()
     }
 
     private func savePosition() {
@@ -267,5 +284,75 @@ class OverlayWindowController: NSObject {
                 NSPoint(x: panel.frame.origin.x, y: panel.frame.origin.y - 6)
             )
         }, completionHandler: completion)
+    }
+
+    // MARK: - Transcript Bubble (live transcript display)
+
+    private func updateTranscriptBubble(text: String, phase: OverlayPhaseState.Phase) {
+        let enabled = UserDefaults.standard.bool(forKey: "showLiveTranscript")
+        let shouldShow = enabled
+            && !text.isEmpty
+            && (phase == .listening || phase == .paused)
+
+        if shouldShow {
+            if transcriptPanel == nil { createTranscriptPanel() }
+            repositionTranscriptBubble()
+            if transcriptPanel?.isVisible == false {
+                transcriptPanel?.alphaValue = 0
+                transcriptPanel?.orderFront(nil)
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.18
+                    transcriptPanel?.animator().alphaValue = 1
+                }
+            }
+        } else {
+            hideTranscriptBubble()
+        }
+    }
+
+    private func hideTranscriptBubble() {
+        guard let p = transcriptPanel, p.isVisible else { return }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.15
+            p.animator().alphaValue = 0
+        }, completionHandler: { [weak p] in
+            p?.orderOut(nil)
+        })
+    }
+
+    private func createTranscriptPanel() {
+        let p = NSPanel(
+            contentRect: NSRect(x: 0, y: 0,
+                                width: TranscriptBubbleView.bubbleWidth,
+                                height: TranscriptBubbleView.minHeight),
+            styleMask:   [.nonactivatingPanel, .fullSizeContentView, .borderless],
+            backing:     .buffered,
+            defer:       false
+        )
+        p.isFloatingPanel    = true
+        p.level              = .floating
+        p.backgroundColor    = .clear
+        p.isOpaque           = false
+        p.hasShadow          = true
+        p.ignoresMouseEvents = true   // pill panel handles all interaction
+        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+
+        let content = TranscriptBubbleView(transcriptionController: transcriptionController)
+        let hosting = NSHostingView(rootView: content)
+        hosting.frame            = NSRect(origin: .zero, size: CGSize(width: TranscriptBubbleView.bubbleWidth, height: TranscriptBubbleView.minHeight))
+        hosting.autoresizingMask = [.width, .height]
+        p.contentView = hosting
+
+        self.transcriptPanel = p
+    }
+
+    private func repositionTranscriptBubble() {
+        guard let pill = panel, let bubble = transcriptPanel else { return }
+        let bw = TranscriptBubbleView.bubbleWidth
+        let bh = bubble.frame.height > 0 ? bubble.frame.height : TranscriptBubbleView.minHeight
+        let gap: CGFloat = 8
+        let x = pill.frame.midX - bw / 2
+        let y = pill.frame.minY - gap - bh
+        bubble.setFrame(NSRect(x: x, y: y, width: bw, height: bh), display: true)
     }
 }

@@ -58,9 +58,10 @@ struct SettingsView: View {
 // MARK: - Transcription
 
 struct TranscriptionSettingsView: View {
-    @AppStorage("transcriptionBackend") private var backend          = "apple"
-    @AppStorage("deepgramApiKey")       private var deepgramApiKey   = ""
-    @AppStorage("audioEnhancement")     private var audioEnhancement = true
+    @AppStorage("transcriptionBackend") private var backend            = "apple"
+    @AppStorage("deepgramApiKey")       private var deepgramApiKey     = ""
+    @AppStorage("audioEnhancement")     private var audioEnhancement   = true
+    @AppStorage("showLiveTranscript")   private var showLiveTranscript = true
     @State private var deepgramVisible = false
 
     var body: some View {
@@ -79,6 +80,15 @@ struct TranscriptionSettingsView: View {
                                 text: $deepgramApiKey,
                                 visible: $deepgramVisible)
                 }
+            }
+
+            Section {
+                Toggle("Show live transcript", isOn: $showLiveTranscript)
+            } header: {
+                Text("Display")
+            } footer: {
+                Text("Shows a transcript bubble below the pill while you're speaking. Polished text is pasted at the end.")
+                    .font(.caption).foregroundColor(.secondary)
             }
 
             Section {
