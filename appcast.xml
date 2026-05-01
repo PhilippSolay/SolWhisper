@@ -4,6 +4,23 @@
     <title>SolWhisper Updates</title>
     <language>en</language>
     <item>
+      <title>Version 0.3.1</title>
+      <pubDate>Sat, 02 May 2026 00:25:00 +0000</pubDate>
+      <sparkle:version>9</sparkle:version>
+      <sparkle:shortVersionString>0.3.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h3>Fix</h3>
+        <ul>
+          <li>App now launches after auto-update (re-signed bundle to fix Sparkle.framework Team ID mismatch).</li>
+        </ul>
+      ]]></description>
+      <enclosure url="https://github.com/PhilippSolay/SolWhisper/releases/download/v0.3.1/SolWhisper-v0.3.1.dmg"
+                 sparkle:edSignature="V6EjXNWxH6ozTSWJsPnaXVnHHrEyoonrTy3iCCOmofYKW3Rkflygw+Zb5GJsd651QoWSUPeMdSDzs6OcNIHbDQ=="
+                 length="1795282"
+                 type="application/octet-stream"/>
+    </item>
+    <item>
       <title>Version 0.3.0</title>
       <pubDate>Fri, 01 May 2026 23:50:00 +0000</pubDate>
       <sparkle:version>8</sparkle:version>

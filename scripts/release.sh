@@ -50,6 +50,14 @@ STAGING="/tmp/SolWhisper-release-staging"
 rm -rf "$STAGING" "$PROJECT_DIR/$DMG_NAME"
 mkdir -p "$STAGING"
 cp -R "$APP_PATH" "$STAGING/$APP_NAME.app"
+
+# CRITICAL: Re-sign the entire bundle ad-hoc so Sparkle.framework's Team ID
+# matches the host app's Team ID (both nil). Without this, after auto-update
+# the new app fails to launch with "different Team IDs" dyld error.
+echo "Re-signing bundle ad-hoc (matches host signing)..."
+codesign --force --deep --sign - "$STAGING/$APP_NAME.app"
+codesign --verify --deep "$STAGING/$APP_NAME.app" || { echo "ERROR: signature verify failed"; exit 1; }
+
 ln -s /Applications "$STAGING/Applications"
 hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" -ov -format UDZO "$PROJECT_DIR/$DMG_NAME"
 rm -rf "$STAGING"
