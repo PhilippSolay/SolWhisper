@@ -4,6 +4,25 @@
     <title>SolWhisper Updates</title>
     <language>en</language>
     <item>
+      <title>Version 0.3.0</title>
+      <pubDate>Fri, 01 May 2026 23:50:00 +0000</pubDate>
+      <sparkle:version>8</sparkle:version>
+      <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h3>What's New</h3>
+        <ul>
+          <li>Live transcript bubble below the pill while you speak</li>
+          <li>Fixed: LLM no longer answers transcripts as if they were questions</li>
+          <li>New "Show live transcript" toggle in Settings → Transcription</li>
+        </ul>
+      ]]></description>
+      <enclosure url="https://github.com/PhilippSolay/SolWhisper/releases/download/v0.3.0/SolWhisper-v0.3.0.dmg"
+                 sparkle:edSignature="RhTqjRnP6sIoQr/SZv2eHaWUYOC9Npd9nbYjdIGyD1/QY00Lo5xGtmYxcOimPI9hbvnAJHx8BdTg64lXXE5MAg=="
+                 length="1795727"
+                 type="application/octet-stream"/>
+    </item>
+    <item>
       <title>Version 0.2.0</title>
       <pubDate>Sun, 27 Apr 2026 22:37:00 +0000</pubDate>
       <sparkle:version>5</sparkle:version>
