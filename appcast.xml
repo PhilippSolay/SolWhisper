@@ -4,6 +4,23 @@
     <title>SolWhisper Updates</title>
     <language>en</language>
     <item>
+      <title>Version 0.3.2</title>
+      <pubDate>Sat, 02 May 2026 01:30:00 +0000</pubDate>
+      <sparkle:version>11</sparkle:version>
+      <sparkle:shortVersionString>0.3.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h3>Improved</h3>
+        <ul>
+          <li>Live transcript bubble: now fits 4 lines and properly clips text scrolling past the rounded top edge.</li>
+        </ul>
+      ]]></description>
+      <enclosure url="https://github.com/PhilippSolay/SolWhisper/releases/download/v0.3.2/SolWhisper-v0.3.2.dmg"
+                 sparkle:edSignature="R1HrhT6c/EQ8VvjG+7NIZKd3QjhSi5crmbIndUcHWCxGZJHl3CsM0ECy5CBqkAR2aMkqsc8mrLs5fG31xWj9Dg=="
+                 length="1795038"
+                 type="application/octet-stream"/>
+    </item>
+    <item>
       <title>Version 0.3.1</title>
       <pubDate>Sat, 02 May 2026 00:25:00 +0000</pubDate>
       <sparkle:version>9</sparkle:version>
