@@ -8,15 +8,28 @@ class HotkeyManager {
 
     var onHotkeyPressed: (() -> Void)?
     var onPauseHotkeyPressed: (() -> Void)?
+    var onSnipHotkeyPressed:  (() -> Void)?
+    /// Toggles meeting recording — same shape as the dictation hotkey
+    /// (one combo, press to start, press again to stop).
+    var onMeetingHotkeyPressed: (() -> Void)?
+    /// Opens the Transcripts window (global; menu item shortcut only fires
+    /// when the menu is visible).
+    var onTranscriptsHotkeyPressed: (() -> Void)?
 
-    private var hotKeyRef:       EventHotKeyRef?
-    private var pauseHotKeyRef:  EventHotKeyRef?
-    private var eventHandlerRef: EventHandlerRef?
+    private var hotKeyRef:            EventHotKeyRef?
+    private var pauseHotKeyRef:       EventHotKeyRef?
+    private var snipHotKeyRef:        EventHotKeyRef?
+    private var meetingHotKeyRef:     EventHotKeyRef?
+    private var transcriptsHotKeyRef: EventHotKeyRef?
+    private var eventHandlerRef:      EventHandlerRef?
     private var defaultsObserver: Any?
 
     /// Track last-registered values to avoid redundant re-registration
-    private var lastRecordKey:  (Int, Int) = (0, 0)
-    private var lastPauseKey:   (Int, Int) = (0, 0)
+    private var lastRecordKey:      (Int, Int) = (0, 0)
+    private var lastPauseKey:       (Int, Int) = (0, 0)
+    private var lastSnipKey:        (Int, Int) = (0, 0)
+    private var lastMeetingKey:     (Int, Int) = (0, 0)
+    private var lastTranscriptsKey: (Int, Int) = (0, 0)
 
     // MARK: - Start / Stop
 
@@ -35,10 +48,13 @@ class HotkeyManager {
     }
 
     func stopListening() {
-        if let ref = hotKeyRef       { UnregisterEventHotKey(ref);  hotKeyRef       = nil }
-        if let ref = pauseHotKeyRef  { UnregisterEventHotKey(ref);  pauseHotKeyRef  = nil }
-        if let ref = eventHandlerRef { RemoveEventHandler(ref);      eventHandlerRef = nil }
-        if let obs = defaultsObserver { NotificationCenter.default.removeObserver(obs) }
+        if let ref = hotKeyRef            { UnregisterEventHotKey(ref); hotKeyRef            = nil }
+        if let ref = pauseHotKeyRef       { UnregisterEventHotKey(ref); pauseHotKeyRef       = nil }
+        if let ref = snipHotKeyRef        { UnregisterEventHotKey(ref); snipHotKeyRef        = nil }
+        if let ref = meetingHotKeyRef     { UnregisterEventHotKey(ref); meetingHotKeyRef     = nil }
+        if let ref = transcriptsHotKeyRef { UnregisterEventHotKey(ref); transcriptsHotKeyRef = nil }
+        if let ref = eventHandlerRef      { RemoveEventHandler(ref);     eventHandlerRef      = nil }
+        if let obs = defaultsObserver      { NotificationCenter.default.removeObserver(obs) }
     }
 
     // MARK: - Carbon event handler (installed once)
@@ -70,6 +86,12 @@ class HotkeyManager {
                         mgr.onHotkeyPressed?()
                     } else if hkID.id == 2 {
                         mgr.onPauseHotkeyPressed?()
+                    } else if hkID.id == 3 {
+                        mgr.onSnipHotkeyPressed?()
+                    } else if hkID.id == 4 {
+                        mgr.onMeetingHotkeyPressed?()
+                    } else if hkID.id == 5 {
+                        mgr.onTranscriptsHotkeyPressed?()
                     }
                 }
                 return noErr
@@ -86,17 +108,31 @@ class HotkeyManager {
         let mask  = UserDefaults.standard.integer(forKey: "hotkeyModifierMask")
         let pkc   = UserDefaults.standard.integer(forKey: "pauseHotkeyKeyCode")
         let pmask = UserDefaults.standard.integer(forKey: "pauseHotkeyModifierMask")
+        let skc   = UserDefaults.standard.integer(forKey: "snipHotkeyKeyCode")
+        let smask = UserDefaults.standard.integer(forKey: "snipHotkeyModifierMask")
+        let mkc   = UserDefaults.standard.integer(forKey: "meetingHotkeyKeyCode")
+        let mmask = UserDefaults.standard.integer(forKey: "meetingHotkeyModifierMask")
+        let tkc   = UserDefaults.standard.integer(forKey: "transcriptsHotkeyKeyCode")
+        let tmask = UserDefaults.standard.integer(forKey: "transcriptsHotkeyModifierMask")
 
         let rec  = (kc, mask)
         let pau  = (pkc, pmask)
-        guard rec != lastRecordKey || pau != lastPauseKey else { return }
+        let snip = (skc, smask)
+        let meet = (mkc, mmask)
+        let trans = (tkc, tmask)
+        guard rec != lastRecordKey || pau != lastPauseKey
+              || snip != lastSnipKey || meet != lastMeetingKey
+              || trans != lastTranscriptsKey else { return }
         registerHotKeys()
     }
 
     func registerHotKeys() {
         // Unregister previous bindings
-        if let ref = hotKeyRef      { UnregisterEventHotKey(ref); hotKeyRef      = nil }
-        if let ref = pauseHotKeyRef { UnregisterEventHotKey(ref); pauseHotKeyRef = nil }
+        if let ref = hotKeyRef            { UnregisterEventHotKey(ref); hotKeyRef            = nil }
+        if let ref = pauseHotKeyRef       { UnregisterEventHotKey(ref); pauseHotKeyRef       = nil }
+        if let ref = snipHotKeyRef        { UnregisterEventHotKey(ref); snipHotKeyRef        = nil }
+        if let ref = meetingHotKeyRef     { UnregisterEventHotKey(ref); meetingHotKeyRef     = nil }
+        if let ref = transcriptsHotKeyRef { UnregisterEventHotKey(ref); transcriptsHotKeyRef = nil }
 
         // Record hotkey
         let kc   = UserDefaults.standard.integer(forKey: "hotkeyKeyCode")
@@ -128,6 +164,61 @@ class HotkeyManager {
             DebugLog.shared.log(icon: "⌨️",
                                 label: "Pause hotkey: keyCode=\(pauseKeyCode) mods=\(pauseCarbonMod)",
                                 ok: perr == noErr)
+        }
+
+        // Snip (OCR) hotkey — ships unset. We only register when the user
+        // has explicitly picked one (both keyCode and modifierMask non-zero).
+        let skc   = UserDefaults.standard.integer(forKey: "snipHotkeyKeyCode")
+        let smask = UserDefaults.standard.integer(forKey: "snipHotkeyModifierMask")
+        lastSnipKey = (skc, smask)
+        if skc > 0 && smask > 0 {
+            var snipID = EventHotKeyID(signature: 0x5357_4853, id: 3)
+            let snipKey = UInt32(skc)
+            let snipMod = carbonModifiers(smask)
+            let serr = RegisterEventHotKey(snipKey, snipMod, snipID,
+                                           GetApplicationEventTarget(), 0, &snipHotKeyRef)
+            Task { @MainActor in
+                DebugLog.shared.log(icon: "⌨️",
+                                    label: "Snip hotkey: keyCode=\(snipKey) mods=\(snipMod)",
+                                    ok: serr == noErr)
+            }
+        }
+
+        // Meeting toggle hotkey — also ships unset. One combo, toggles the
+        // meeting state machine (start when idle, stop when recording/paused).
+        let mkc   = UserDefaults.standard.integer(forKey: "meetingHotkeyKeyCode")
+        let mmask = UserDefaults.standard.integer(forKey: "meetingHotkeyModifierMask")
+        lastMeetingKey = (mkc, mmask)
+        if mkc > 0 && mmask > 0 {
+            var meetID = EventHotKeyID(signature: 0x5357_4853, id: 4)
+            let meetKey = UInt32(mkc)
+            let meetMod = carbonModifiers(mmask)
+            let merr = RegisterEventHotKey(meetKey, meetMod, meetID,
+                                           GetApplicationEventTarget(), 0, &meetingHotKeyRef)
+            Task { @MainActor in
+                DebugLog.shared.log(icon: "⌨️",
+                                    label: "Meeting hotkey: keyCode=\(meetKey) mods=\(meetMod)",
+                                    ok: merr == noErr)
+            }
+        }
+
+        // Transcripts window hotkey — global open. Tray menu has its own
+        // shortcut (which only fires when the menu is up); this is the
+        // system-wide trigger.
+        let tkc   = UserDefaults.standard.integer(forKey: "transcriptsHotkeyKeyCode")
+        let tmask = UserDefaults.standard.integer(forKey: "transcriptsHotkeyModifierMask")
+        lastTranscriptsKey = (tkc, tmask)
+        if tkc > 0 && tmask > 0 {
+            var transID = EventHotKeyID(signature: 0x5357_4853, id: 5)
+            let transKey = UInt32(tkc)
+            let transMod = carbonModifiers(tmask)
+            let terr = RegisterEventHotKey(transKey, transMod, transID,
+                                            GetApplicationEventTarget(), 0, &transcriptsHotKeyRef)
+            Task { @MainActor in
+                DebugLog.shared.log(icon: "⌨️",
+                                    label: "Transcripts hotkey: keyCode=\(transKey) mods=\(transMod)",
+                                    ok: terr == noErr)
+            }
         }
     }
 

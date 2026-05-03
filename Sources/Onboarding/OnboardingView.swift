@@ -7,17 +7,18 @@ enum OnboardingStep: Int, CaseIterable {
     case chooseBackend  = 1
     case backendDetail  = 2
     case llmPolish      = 3
-    case hotkey         = 4
-    case allSet         = 5
+    case meetings       = 4
+    case hotkey         = 5
+    case allSet         = 6
 }
 
 // MARK: - Container
 
 struct OnboardingView: View {
 
+    @EnvironmentObject private var secrets: SecretsStore
     @AppStorage("transcriptionBackend")  private var backend          = "apple"
     @AppStorage("deepgramApiKey")        private var deepgramApiKey   = ""
-    @AppStorage("openRouterApiKey")      private var openRouterApiKey = ""
     @AppStorage("enableLLMPolish")       private var enableLLMPolish  = true
     @AppStorage("hotkeyKeyCode")           private var hotkeyKeyCode           = 15
     @AppStorage("hotkeyModifierMask")      private var hotkeyModifierMask      = 10
@@ -37,7 +38,7 @@ struct OnboardingView: View {
     private var canContinue: Bool {
         switch step {
         case .backendDetail: return backend == "apple" || !deepgramApiKey.isEmpty
-        case .llmPolish:     return !enableLLMPolish   || !openRouterApiKey.isEmpty
+        case .llmPolish:     return !enableLLMPolish   || !secrets.openRouterApiKey.isEmpty
         default:             return true
         }
     }
@@ -88,8 +89,46 @@ struct OnboardingView: View {
         case .chooseBackend: chooseBackendStep
         case .backendDetail: backendDetailStep
         case .llmPolish:     llmPolishStep
+        case .meetings:      meetingsStep
         case .hotkey:        hotkeyStep
         case .allSet:        allSetStep
+        }
+    }
+
+    // MARK: ── Meetings step ──
+
+    private var meetingsStep: some View {
+        stepShell(
+            icon: "person.2.wave.2",
+            title: "Record meetings (optional)",
+            subtitle: "SolWhisper can capture mic + system audio so both sides of a call get transcribed."
+        ) {
+            VStack(alignment: .leading, spacing: 10) {
+                onboardingFeatureRow(icon: "lock.shield",
+                                      text: "Audio stays on your Mac — nothing uploaded unless an integration is enabled")
+                onboardingFeatureRow(icon: "rectangle.dashed.badge.record",
+                                      text: "Needs Screen Recording permission to capture other apps' audio")
+                onboardingFeatureRow(icon: "checkmark.circle",
+                                      text: "First click on \"Record meeting\" prompts for the permission + a one-time consent disclaimer")
+            }
+            .padding(.top, 4)
+            .padding(.horizontal, 8)
+
+            Button("Open System Settings → Screen Recording") {
+                NSWorkspace.shared.open(URL(string:
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+            }
+            .controlSize(.regular)
+        }
+    }
+
+    private func onboardingFeatureRow(icon: String, text: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 13))
+                .foregroundColor(.primary)
+                .frame(width: 22)
+            Text(text).font(.system(size: 12))
         }
     }
 
@@ -277,12 +316,16 @@ struct OnboardingView: View {
                 .frame(maxWidth: 380, alignment: .leading)
 
             if enableLLMPolish {
-                APIKeyField(label: "OpenRouter API Key", text: $openRouterApiKey, visible: $openRouterVisible)
+                APIKeyField(label: "OpenRouter API Key", text: $secrets.openRouterApiKey, visible: $openRouterVisible)
                     .frame(maxWidth: 380)
 
                 Link("Get a free OpenRouter key →",
                      destination: URL(string: "https://openrouter.ai")!)
                     .font(.system(size: 12))
+
+                Text("Stored securely in macOS Keychain.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
             }
         }
     }

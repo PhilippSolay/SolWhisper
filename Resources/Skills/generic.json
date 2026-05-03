@@ -1,0 +1,8 @@
+{
+  "id": "generic",
+  "name": "Generic Meeting",
+  "description": "Overview, action items, decisions, open questions, next steps.",
+  "promptTemplate": "You are a meeting summarizer. Analyze the transcript below and produce a Markdown summary with the following sections, in order:\n\n## Overview\n## Action Items\n## Decisions\n## Open Questions\n## Next Steps\n\nUse the participants list when assigning action items. Be concise. Quote directly only when wording matters.\n\nParticipants: {{participants}}\n\n<transcript>\n{{transcript}}\n</transcript>",
+  "outputTemplate": "## Overview\n\n## Action Items\n\n## Decisions\n\n## Open Questions\n\n## Next Steps\n",
+  "isBuiltIn": true
+}

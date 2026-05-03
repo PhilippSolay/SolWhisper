@@ -1,0 +1,8 @@
+{
+  "id": "interview",
+  "name": "Interview",
+  "description": "Candidate signals + recommended next steps.",
+  "promptTemplate": "Summarize an interview in Markdown:\n\n## Candidate Signals\nStrengths, gaps, evidence quoted from the transcript.\n\n## Red Flags\nAnything concerning.\n\n## Cultural Fit\nHow they engaged with the team / problem.\n\n## Recommended Next Steps\nAdvance, hold, decline, or specific follow-up.\n\nParticipants: {{participants}}\n\n<transcript>\n{{transcript}}\n</transcript>",
+  "outputTemplate": "## Candidate Signals\n\n## Red Flags\n\n## Cultural Fit\n\n## Recommended Next Steps\n",
+  "isBuiltIn": true
+}

@@ -4,6 +4,29 @@
 <dict>
 	<key>CFBundleDisplayName</key>
 	<string>SolWhisper</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Audio File</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.audio</string>
+				<string>public.mpeg-4-audio</string>
+				<string>public.mp3</string>
+				<string>com.microsoft.waveform-audio</string>
+				<string>org.xiph.flac</string>
+				<string>org.xiph.ogg-audio</string>
+				<string>com.apple.coreaudio-format</string>
+				<string>public.aifc-audio</string>
+				<string>public.aiff-audio</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIconFile</key>
@@ -17,9 +40,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.3.2</string>
+	<string>0.4.0-alpha.4</string>
 	<key>CFBundleVersion</key>
-	<string>11</string>
+	<string>95</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>LSUIElement</key>
@@ -32,6 +55,8 @@
 	<string>SolWhisper needs microphone access to transcribe speech.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>SolWhisper records system audio (other apps' sound) during meetings so it can transcribe both sides of the conversation.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>SolWhisper uses on-device speech recognition to transcribe your voice privately.</string>
 	<key>SUFeedURL</key>

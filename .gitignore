@@ -11,3 +11,10 @@ Pods/
 
 # Local secrets — never commit
 Resources/local-secrets.json
+
+# Claude Code local state (per-machine config + agent transcripts)
+.claude/
+
+# Release artifacts — published via GitHub releases, not the repo
+*.dmg
+meeting-summary.zip

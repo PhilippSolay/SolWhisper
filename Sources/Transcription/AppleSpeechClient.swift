@@ -19,6 +19,10 @@ class AppleSpeechClient {
     private var latestText   = ""
     private var watch:       Stopwatch?
     private var firstLogged  = false
+    /// When true, the audio tap drops buffers instead of feeding them to the
+    /// recognizer. The pill UI's pause hotkey flips this; resuming continues
+    /// transcription on the existing task without restarting.
+    var isPaused = false
 
     // FFT state
     private let fftSize = 1024
@@ -69,6 +73,8 @@ class AppleSpeechClient {
             self?.handleResult(result, error: error)
         }
 
+        // Honor the user's preferred mic device before reading the format.
+        PreferredInputDevice.applyToInputNode(engine)
         let input  = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         nativeSampleRate = format.sampleRate
@@ -80,9 +86,14 @@ class AppleSpeechClient {
 
         var bufferCount = 0
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
-            self?.request?.append(buf)
-            self?.emitLevel(buf)
-            self?.emitSpectrum(buf)
+            guard let self = self else { return }
+            // Pause hotkey drops buffers — the recognizer keeps its task open
+            // but receives no new audio, so the live transcript stays frozen
+            // at the last partial.
+            if self.isPaused { return }
+            self.request?.append(buf)
+            self.emitLevel(buf)
+            self.emitSpectrum(buf)
             // Log first buffer to confirm mic is delivering audio
             bufferCount += 1
             if bufferCount == 10 {

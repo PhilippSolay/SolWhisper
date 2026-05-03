@@ -1,0 +1,8 @@
+{
+  "id": "standup",
+  "name": "Standup",
+  "description": "Yesterday, today, blockers, risks.",
+  "promptTemplate": "Summarize a team standup in Markdown:\n\n## Yesterday\n## Today\n## Blockers\n## Risks\n\nFor each, group by speaker if possible. Participants: {{participants}}\n\n<transcript>\n{{transcript}}\n</transcript>",
+  "outputTemplate": "## Yesterday\n\n## Today\n\n## Blockers\n\n## Risks\n",
+  "isBuiltIn": true
+}

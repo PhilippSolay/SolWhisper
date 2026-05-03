@@ -5,7 +5,16 @@ import SwiftUI
 @MainActor
 final class OverlayPhaseState: ObservableObject {
     enum Phase: Equatable { case circle, pill, listening, paused, processing }
+    /// Mode A is dictation — left button = X (cancel).
+    /// Mode B/C is meeting — left button = Pause/Resume; cancel is intentionally
+    /// not exposed because meetings are valuable enough that "Stop" is the
+    /// right destructive affordance (it still keeps the recording).
+    enum Mode: Equatable { case dictation, meeting }
     @Published var phase: Phase = .circle
+    @Published var mode: Mode = .dictation
+    /// Latched-on for the past second when the mic peaks above -1 dBFS.
+    /// Driven by `ClippingDetector` in meeting mode.
+    @Published var isClipping: Bool = false
     var onAccept: (() -> Void)?
     var onCancel: (() -> Void)?
     var onResume: (() -> Void)?
@@ -108,18 +117,31 @@ struct RecordingOverlayView: View {
             RoundedRectangle(cornerRadius: Self.pillHeight / 2)
                 .fill(Color(white: 0.12, opacity: 0.94))
 
+            // Clipping indicator — thin red ring when the mic peaks. Only
+            // meaningful in meeting mode; dictation users have AGC. Drawn
+            // in the ZStack so it overlays the background but stays under
+            // the buttons + waveform.
+            if phaseState.isClipping {
+                RoundedRectangle(cornerRadius: Self.pillHeight / 2)
+                    .stroke(Color.red.opacity(0.85), lineWidth: 2)
+                    .transition(.opacity)
+            }
+
             if isHovering {
-                // Hover state: X — waveform — ✓
+                // Hover state: [Pause/Cancel] — waveform — [Stop]
                 HStack(spacing: 0) {
-                    // Cancel button (left)
+                    // Left button: Cancel (X) in dictation, Pause in meeting.
                     Button {
-                        phaseState.onCancel?()
+                        switch phaseState.mode {
+                        case .dictation: phaseState.onCancel?()
+                        case .meeting:   phaseState.onResume?()
+                        }
                     } label: {
                         ZStack {
                             Circle()
                                 .fill(Color.white.opacity(0.08))
                                 .frame(width: 32, height: 32)
-                            Image(systemName: "xmark")
+                            Image(systemName: phaseState.mode == .meeting ? "pause.fill" : "xmark")
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundColor(Color(white: 0.55))
                         }
@@ -135,7 +157,7 @@ struct RecordingOverlayView: View {
 
                     Spacer(minLength: 2)
 
-                    // Accept button (right)
+                    // Right button: ✓ Accept in dictation, ⏹ Stop in meeting.
                     Button {
                         phaseState.onAccept?()
                     } label: {
@@ -143,7 +165,7 @@ struct RecordingOverlayView: View {
                             Circle()
                                 .fill(Color.white.opacity(0.12))
                                 .frame(width: 32, height: 32)
-                            Image(systemName: "checkmark")
+                            Image(systemName: phaseState.mode == .meeting ? "checkmark" : "checkmark")
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundColor(.white)
                         }
@@ -175,15 +197,23 @@ struct RecordingOverlayView: View {
 
             if isHovering {
                 HStack(spacing: 0) {
-                    // Cancel (left)
+                    // Left button while paused:
+                    //   dictation → X (cancel)
+                    //   meeting   → ▶ (resume — same control as the right
+                    //                  button in dictation, kept on the left
+                    //                  so the layout matches the listening
+                    //                  phase where left = pause/resume)
                     Button {
-                        phaseState.onCancel?()
+                        switch phaseState.mode {
+                        case .dictation: phaseState.onCancel?()
+                        case .meeting:   phaseState.onResume?()
+                        }
                     } label: {
                         ZStack {
                             Circle()
                                 .fill(Color.white.opacity(0.08))
                                 .frame(width: 32, height: 32)
-                            Image(systemName: "xmark")
+                            Image(systemName: phaseState.mode == .meeting ? "play.fill" : "xmark")
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundColor(Color(white: 0.55))
                         }
@@ -193,15 +223,20 @@ struct RecordingOverlayView: View {
 
                     Spacer()
 
-                    // Resume (right)
+                    // Right button while paused:
+                    //   dictation → ▶ (resume)
+                    //   meeting   → ⏹ (stop the meeting)
                     Button {
-                        phaseState.onResume?()
+                        switch phaseState.mode {
+                        case .dictation: phaseState.onResume?()
+                        case .meeting:   phaseState.onAccept?()
+                        }
                     } label: {
                         ZStack {
                             Circle()
                                 .fill(Color.white.opacity(0.12))
                                 .frame(width: 32, height: 32)
-                            Image(systemName: "play.fill")
+                            Image(systemName: phaseState.mode == .meeting ? "checkmark" : "play.fill")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundColor(.white)
                         }
@@ -318,8 +353,16 @@ func keyCodeToString(_ code: Int) -> String {
         18:"1", 19:"2", 20:"3", 21:"4", 22:"6", 23:"5", 24:"=", 25:"9",
         26:"7", 27:"-", 28:"8", 29:"0", 31:"O", 32:"U", 34:"I", 35:"P",
         37:"L", 38:"J", 40:"K", 45:"N", 46:"M",
+        // Punctuation
+        30:"]", 33:"[", 39:"'", 41:";", 42:"\\",
+        43:",", 44:"/", 47:".", 50:"`",
+        // Special keys
         36:"↩", 48:"⇥", 49:"Space", 51:"⌫", 53:"⎋",
-        123:"←", 124:"→", 125:"↓", 126:"↑"
+        117:"⌦",
+        123:"←", 124:"→", 125:"↓", 126:"↑",
+        // Function keys
+        122:"F1", 120:"F2", 99:"F3", 118:"F4", 96:"F5", 97:"F6",
+        98:"F7", 100:"F8", 101:"F9", 109:"F10", 103:"F11", 111:"F12"
     ]
     return map[code] ?? "(\(code))"
 }

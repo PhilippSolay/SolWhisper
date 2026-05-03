@@ -23,9 +23,14 @@ enum PasteManager {
     @MainActor
     static func paste(text: String, into target: NSRunningApplication?) async {
 
-        // 1. Always write to clipboard (manual Cmd+V always works)
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        // 1. Ensure the text is on the clipboard. Skip the clear+set if the
+        // caller already wrote it (additive clipboard relies on the
+        // changeCount it captured being preserved).
+        let pb = NSPasteboard.general
+        if pb.string(forType: .string) != text {
+            pb.clearContents()
+            pb.setString(text, forType: .string)
+        }
 
         DebugLog.shared.log(
             icon: "📋", label: "Paste start",

@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "date": "2026-05-03",
+      "version": "0.4.0-alpha.3",
+      "title": "Custom webhooks + DeviceMonitor",
+      "body": "Wire SolWhisper to anything that speaks HTTP. Mid-call mic switches no longer kill recordings — we catch the disconnect and let you keep going on AirPods."
+    },
+    {
+      "date": "2026-05-03",
+      "version": "0.4.0-alpha.2",
+      "title": "Meeting pill + dictation history",
+      "body": "Real per-bin waveform during meetings, clipping ring when you're hot, manual Summarize button, and a History tab so you can fish out anything you ever dictated. Stats appear on Home — start typing less."
+    },
+    {
+      "date": "2026-05-03",
+      "version": "0.4.0-alpha.1",
+      "title": "Screen Capture (snip text)",
+      "body": "Press a hotkey, drag a rectangle, paste anywhere. Vision OCR runs on-device, so even your most embarrassing screenshots stay between you and your hard drive."
+    },
+    {
+      "date": "2026-05-03",
+      "version": "0.4.0-alpha",
+      "title": "Meeting recording lands",
+      "body": "Mic + system audio captured side-by-side, transcribed, summarized with the skill of your choice (Generic / Sales / 1:1 / Standup / Brainstorm / Interview). Hermes + Obsidian fan-outs ship today; Slack is just a custom webhook away."
+    },
+    {
+      "date": "2026-05-03",
+      "version": "0.3.x",
+      "title": "WhisperKit, fully offline",
+      "body": "On-device transcription via Apple's Vision and Whisper models. Runs on a plane, in a tunnel, in your basement. No tokens billed."
+    }
+  ]
+}

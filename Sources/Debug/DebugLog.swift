@@ -35,6 +35,15 @@ final class DebugLog: ObservableObject {
 
     func log(icon: String, label: String, value: String? = nil,
              ms: Int? = nil, tokens: LogEntry.TokenInfo? = nil, ok: Bool = true) {
+        // Errors (ok == false) bridge to ErrorLogger regardless of debug mode,
+        // so testers always have a durable trail of failures even with the
+        // in-app debug panel disabled.
+        if !ok {
+            var msg = label
+            if let v = value { msg += " — \(v)" }
+            ErrorLogger.shared.log(msg)
+        }
+
         guard enabled else { return }
         let e = LogEntry(icon: icon, label: label, value: value, ms: ms, tokens: tokens, ok: ok)
         entries.insert(e, at: 0)

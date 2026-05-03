@@ -12,6 +12,22 @@ set -euo pipefail
 #   - DMG download URL not reachable           → verify post-upload
 #   - Build number must always increase        → use Info.plist's auto-bump
 #
+# Notarization (Sprint 0):
+#   When SW_NOTARIZE_PROFILE is set in the environment, the script signs the
+#   app with Developer ID, submits to Apple's notary service, staples the
+#   ticket, and packages the notarized bundle into the DMG. Without it,
+#   falls back to ad-hoc signing (useful for dev iteration / pre-cert work).
+#
+#   To set up once:
+#     xcrun notarytool store-credentials "SolWhisperNotary" \
+#       --apple-id you@example.com \
+#       --team-id ABCDE12345 \
+#       --password <app-specific-password>
+#
+#   Then export before running:
+#     export SW_NOTARIZE_PROFILE="SolWhisperNotary"
+#     export SW_DEVELOPER_ID="Developer ID Application: Your Name (ABCDE12345)"
+#
 # Usage: ./scripts/release.sh <version> [release-notes-file]
 # Example: ./scripts/release.sh 0.4.0 notes/v0.4.0.md
 #
@@ -19,6 +35,7 @@ set -euo pipefail
 #   - gh CLI authenticated (gh auth login)
 #   - Sparkle EdDSA private key in Keychain (run scripts/generate-sparkle-keys.sh once)
 #   - Xcode at /Applications/Xcode.app
+#   - For notarization: Apple Developer account + notary keychain profile (see above)
 
 VERSION="${1:?Usage: $0 <version> [release-notes-file]}"
 NOTES_FILE="${2:-}"
@@ -76,11 +93,22 @@ echo "▶ Bump version + build"
 
 # The Bump Build Number build phase auto-increments CFBundleVersion during
 # xcodebuild. Don't set it manually here.
+#
+# When SW_TEAM_ID is set, xcodebuild does Developer ID signing in-tree. The
+# downstream re-sign block still re-signs the bundle in staging (so the DMG
+# matches what we hand to notarytool), but having xcodebuild use the right
+# team avoids "Sparkle.framework not signed by same team" warnings.
+XCODEBUILD_ARGS=(
+    -project "$PROJECT_DIR/$APP_NAME.xcodeproj"
+    -scheme "$APP_NAME"
+    -configuration Release
+    clean build
+)
+if [ -n "${SW_TEAM_ID:-}" ]; then
+    XCODEBUILD_ARGS+=(DEVELOPMENT_TEAM="$SW_TEAM_ID" CODE_SIGN_IDENTITY="Developer ID Application")
+fi
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  xcodebuild -project "$PROJECT_DIR/$APP_NAME.xcodeproj" \
-    -scheme "$APP_NAME" \
-    -configuration Release \
-    clean build 2>&1 | grep -E "(error:|BUILD SUCCEEDED|BUILD FAILED)" | head -3
+  xcodebuild "${XCODEBUILD_ARGS[@]}" 2>&1 | grep -E "(error:|BUILD SUCCEEDED|BUILD FAILED)" | head -3
 
 APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData/${APP_NAME}-*/Build/Products/Release -name "$APP_NAME.app" -maxdepth 1 2>/dev/null | head -1)
 if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
@@ -100,15 +128,60 @@ rm -rf "$STAGING" "$DMG_PATH"
 mkdir -p "$STAGING"
 cp -R "$APP_PATH" "$STAGING/$APP_NAME.app"
 
-# CRITICAL: re-sign so Sparkle.framework's Team ID matches the host's (both nil
-# under ad-hoc). Without this, after auto-update the app fails to launch with:
-#   Library not loaded: @rpath/Sparkle.framework — different Team IDs
-codesign --force --deep --sign - "$STAGING/$APP_NAME.app" 2>/dev/null
-if ! codesign --verify --deep "$STAGING/$APP_NAME.app" 2>/dev/null; then
-    echo "  ✗ codesign verify failed on staged bundle"
-    exit 1
+# CRITICAL: re-sign so Sparkle.framework's Team ID matches the host's
+# (otherwise the app fails to launch after auto-update with:
+#   "Library not loaded: @rpath/Sparkle.framework — different Team IDs")
+#
+# Two paths:
+#   1. SW_DEVELOPER_ID set + SW_NOTARIZE_PROFILE set → Developer ID + notarize.
+#      TCC permissions persist across versions, no quarantine prompt for users.
+#   2. Neither set → ad-hoc. Local dev iteration; users will hit Gatekeeper +
+#      get TCC reset on every install.
+ENTITLEMENTS="$PROJECT_DIR/Resources/SolWhisper.entitlements"
+if [ -n "${SW_DEVELOPER_ID:-}" ] && [ -n "${SW_NOTARIZE_PROFILE:-}" ]; then
+    echo "  ▸ Developer ID signing: $SW_DEVELOPER_ID"
+    codesign --force --deep --options runtime --timestamp \
+        --entitlements "$ENTITLEMENTS" \
+        --sign "$SW_DEVELOPER_ID" "$STAGING/$APP_NAME.app"
+    if ! codesign --verify --deep --strict --verbose=2 "$STAGING/$APP_NAME.app" 2>/dev/null; then
+        echo "  ✗ codesign verify failed on Developer ID-signed bundle"
+        exit 1
+    fi
+    echo "  ✓ Bundle signed with Developer ID + hardened runtime"
+
+    # Notarize: zip the bundle, submit, wait for ticket, staple it back to the
+    # bundle. Stapling is what lets the app launch offline without contacting
+    # Apple every time.
+    echo "▶ Notarize (this can take 1–10 minutes)"
+    NOTARY_ZIP="/tmp/$APP_NAME-notarize.zip"
+    rm -f "$NOTARY_ZIP"
+    /usr/bin/ditto -c -k --keepParent "$STAGING/$APP_NAME.app" "$NOTARY_ZIP"
+    if ! xcrun notarytool submit "$NOTARY_ZIP" \
+            --keychain-profile "$SW_NOTARIZE_PROFILE" \
+            --wait; then
+        echo "  ✗ notarytool submission failed — check output above"
+        rm -f "$NOTARY_ZIP"
+        exit 1
+    fi
+    rm -f "$NOTARY_ZIP"
+    xcrun stapler staple "$STAGING/$APP_NAME.app"
+    if ! xcrun stapler validate "$STAGING/$APP_NAME.app" >/dev/null 2>&1; then
+        echo "  ✗ stapler validate failed"
+        exit 1
+    fi
+    echo "  ✓ Notarized + stapled"
+else
+    if [ -n "${SW_DEVELOPER_ID:-}" ] || [ -n "${SW_NOTARIZE_PROFILE:-}" ]; then
+        echo "  ⚠ Both SW_DEVELOPER_ID and SW_NOTARIZE_PROFILE must be set together."
+        echo "    Falling back to ad-hoc."
+    fi
+    codesign --force --deep --sign - "$STAGING/$APP_NAME.app" 2>/dev/null
+    if ! codesign --verify --deep "$STAGING/$APP_NAME.app" 2>/dev/null; then
+        echo "  ✗ codesign verify failed on staged bundle"
+        exit 1
+    fi
+    echo "  ✓ Bundle re-signed ad-hoc (no notarization — testers will see Gatekeeper)"
 fi
-echo "  ✓ Bundle re-signed (consistent ad-hoc, fixes Sparkle Team ID mismatch)"
 
 ln -s /Applications "$STAGING/Applications"
 hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" -ov -format UDZO "$DMG_PATH" >/dev/null
@@ -196,7 +269,28 @@ echo "  ✓ Prepended item to appcast.xml"
 
 echo "▶ Commit + push"
 
-git add appcast.xml "$INFO_PLIST"
+# ── Update Resources/whats-new.json (prepend release entry) ─────────────────
+#
+# When SW_WHATSNEW_TITLE / SW_WHATSNEW_BODY are set in the env, the release
+# script prepends a fresh "What's new?" item to the bundled feed so testers
+# see the marketing copy on Settings → Home. Without those vars, the file
+# is left alone — keeping the existing entries.
+WHATSNEW="$PROJECT_DIR/Resources/whats-new.json"
+if [ -n "${SW_WHATSNEW_TITLE:-}" ] && [ -n "${SW_WHATSNEW_BODY:-}" ] && [ -f "$WHATSNEW" ]; then
+    DATE=$(date -u +%Y-%m-%d)
+    python3 - "$WHATSNEW" "$DATE" "$VERSION" "$SW_WHATSNEW_TITLE" "$SW_WHATSNEW_BODY" <<'PYEOF'
+import json, sys
+path, date, version, title, body = sys.argv[1:6]
+with open(path) as f: data = json.load(f)
+items = data.get("items", [])
+items.insert(0, {"date": date, "version": version, "title": title, "body": body})
+data["items"] = items
+with open(path, "w") as f: json.dump(data, f, indent=2)
+PYEOF
+    echo "  ✓ Prepended What's-new entry: $SW_WHATSNEW_TITLE"
+fi
+
+git add appcast.xml "$INFO_PLIST" "$WHATSNEW"
 git commit -m "Release v${VERSION}" >/dev/null || true
 git push origin main >/dev/null
 echo "  ✓ Pushed to main"
@@ -227,6 +321,17 @@ fi
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 
+if [ -n "${SW_NOTARIZE_PROFILE:-}" ]; then
+    INSTALL_NOTE="Download the DMG, drag SolWhisper to Applications, launch.
+  No xattr / Gatekeeper hoops — bundle is notarized + stapled.
+  Permissions granted previously will persist."
+else
+    INSTALL_NOTE="Download the DMG, drag SolWhisper to Applications.
+  xattr -cr /Applications/SolWhisper.app   (ad-hoc build, clears quarantine)
+  Launch and grant Microphone + Speech Recognition + Accessibility + Automation.
+  TCC permissions reset because CDHash changed."
+fi
+
 cat <<DONE
 
 Released $APP_NAME v${VERSION} (build $BUILD)
@@ -235,9 +340,7 @@ Released $APP_NAME v${VERSION} (build $BUILD)
   https://raw.githubusercontent.com/$REPO/main/appcast.xml
 
 For testers (fresh install):
-  1. Download the DMG, drag SolWhisper to Applications
-  2. xattr -cr /Applications/SolWhisper.app   (clear quarantine flag)
-  3. Launch and grant Microphone + Speech Recognition + Automation
+  $INSTALL_NOTE
 
 For existing users:
   Click "Check for Updates…" in the menu bar.

@@ -1,39 +1,91 @@
 import Foundation
 
+/// Dictation-cleanup ("polish") path. Despite the legacy name, this class no
+/// longer hard-codes OpenRouter — it dispatches through `LLMResolver` so it
+/// honors whatever model the user has pinned to the **dictation cleanup**
+/// role in Settings → Models → Routing. The OpenRouter-specific HTTP code
+/// has moved into `OpenRouterLLMClient` (in `LLMClient.swift`); this class
+/// owns the dictation-specific prompt + hallucination guard.
 class OpenRouterClient {
 
     func polish(text: String, completion: @escaping (String?) -> Void) {
-        let apiKey = UserDefaults.standard.string(forKey: "openRouterApiKey") ?? ""
-        let model  = UserDefaults.standard.string(forKey: "openRouterModel") ?? "anthropic/claude-3-5-haiku"
+        Task { @MainActor in
+            let polished = await Self.polish(text: text)
+            completion(polished)
+        }
+    }
 
-        guard !apiKey.isEmpty else {
-            Task { @MainActor in
-                DebugLog.shared.log(icon: "✨", label: "OpenRouter skipped", value: "no API key", ok: false)
-            }
-            completion(text)
-            return
+    /// Core async path. Builds the dictation cleanup prompt, dispatches to
+    /// the routed LLM client, and runs the hallucination guard. Returns the
+    /// cleaned text (or the raw transcript on any failure).
+    @MainActor
+    static func polish(text: String) async -> String {
+        guard let resolved = LLMResolver.resolve(.dictation) else {
+            DebugLog.shared.log(icon: "✨", label: "Polish skipped",
+                                value: "no LLM routing resolved", ok: false)
+            return text
         }
 
         let watch = Stopwatch()
-        Task { @MainActor in
-            DebugLog.shared.log(icon: "✨", label: "OpenRouter request", value: model)
-        }
+        DebugLog.shared.log(icon: "✨", label: "Polish request",
+                            value: "\(resolved.providerLabel) · \(resolved.modelID)")
 
-        guard let url = URL(string: "https://openrouter.ai/api/v1/chat/completions") else {
-            completion(text); return
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)",   forHTTPHeaderField: "Authorization")
-        request.setValue("application/json",    forHTTPHeaderField: "Content-Type")
-        request.setValue("SolWhisper",          forHTTPHeaderField: "X-Title")
+        let systemPrompt = buildSystemPrompt()
+        let messages: [LLMMessage] = [
+            .init(role: .system, content: systemPrompt),
+            .init(role: .user,   content: "<transcript>\(text)</transcript>")
+        ]
 
-        // Read cleanup preferences
+        do {
+            var cleaned = try await resolved.client.complete(
+                messages: messages,
+                model: resolved.modelID,
+                temperature: 0.0,
+                maxTokens: 1000
+            )
+            cleaned = stripTags(cleaned)
+            let ms = watch.elapsed
+
+            // Hallucination guard — if cleaned output diverges wildly from
+            // input length, the LLM probably answered the prompt instead of
+            // cleaning. Word count ratio: cleaned should be 0.4x – 2.0x.
+            let inputWords   = text.split(whereSeparator: { $0.isWhitespace }).count
+            let cleanedWords = cleaned.split(whereSeparator: { $0.isWhitespace }).count
+            if inputWords > 0 {
+                let ratio = Double(cleanedWords) / Double(inputWords)
+                if ratio < 0.4 || ratio > 2.0 {
+                    DebugLog.shared.log(
+                        icon: "⚠️", label: "Polish hallucination guard",
+                        value: "ratio=\(String(format: "%.2f", ratio)) (\(inputWords)→\(cleanedWords) words) — using raw transcript",
+                        ms: ms, ok: false)
+                    return text
+                }
+            }
+
+            DebugLog.shared.log(icon: "✨", label: "Polish done",
+                                value: "\"\(String(cleaned.prefix(60)))\"",
+                                ms: ms)
+            return cleaned
+
+        } catch let LLMError.missingApiKey(p) {
+            DebugLog.shared.log(icon: "✨", label: "Polish skipped",
+                                value: "no API key for \(p)", ok: false)
+            return text
+        } catch {
+            DebugLog.shared.log(icon: "✨", label: "Polish error",
+                                value: error.localizedDescription,
+                                ms: watch.elapsed, ok: false)
+            return text
+        }
+    }
+
+    // MARK: - Prompt construction
+
+    private static func buildSystemPrompt() -> String {
         let removeFiller   = UserDefaults.standard.bool(forKey: "polishRemoveFiller")
         let fixPunctuation = UserDefaults.standard.bool(forKey: "polishFixPunctuation")
         let fixGrammar     = UserDefaults.standard.bool(forKey: "polishFixGrammar")
 
-        // Build active rules list
         var activeRules: [String] = []
         if removeFiller   { activeRules.append("- Remove filler words (um, uh, like, you know, basically, I mean, right, well).") }
         if fixPunctuation { activeRules.append("- Fix punctuation and capitalization.") }
@@ -43,7 +95,7 @@ class OpenRouterClient {
 
         let rulesBlock = activeRules.joined(separator: "\n")
 
-        var systemPrompt = """
+        var prompt = """
         You are a TEXT PROCESSING tool, not a chat assistant. You receive raw speech-to-text data wrapped in <transcript> tags. Your only output is the cleaned version of that text.
 
         RULES:
@@ -75,89 +127,29 @@ class OpenRouterClient {
         if let data  = vocabJSON.data(using: .utf8),
            let words = try? JSONDecoder().decode([String].self, from: data),
            !words.isEmpty {
-            systemPrompt += "\n\nCustom vocabulary — always spell these exactly: \(words.joined(separator: ", "))."
+            prompt += """
+
+
+            Custom vocabulary the user uses regularly: \(words.joined(separator: ", ")).
+            Apply this list ONLY when:
+              1. The transcript contains a word that is clearly a phonetic match
+                 for one of these terms (e.g. user said "cura" / "kyura" / "kura"
+                 → use the exact "Cura" if it's in the list).
+              2. The match is unambiguous — the word in the transcript is obviously
+                 meant to be a name/term from this list, not a generic English word.
+            Do NOT insert these terms if the transcript doesn't contain them.
+            Do NOT replace generic English words with vocabulary entries that
+            happen to be near-homophones of common words.
+            """
         }
 
-        // Wrap user content in delimiter tags so the LLM treats it as data
-        let userContent = "<transcript>\(text)</transcript>"
+        return prompt
+    }
 
-        let body: [String: Any] = [
-            "model": model,
-            "messages": [
-                ["role": "system", "content": systemPrompt],
-                ["role": "user",   "content": userContent]
-            ],
-            "max_tokens": 1000,
-            "temperature": 0.0
-        ]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            let ms = watch.elapsed
-
-            if let error {
-                Task { @MainActor in
-                    DebugLog.shared.log(icon: "✨", label: "OpenRouter error", value: error.localizedDescription, ms: ms, ok: false)
-                }
-                DispatchQueue.main.async { completion(text) }
-                return
-            }
-
-            guard let data,
-                  let json     = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let choices  = json["choices"]  as? [[String: Any]],
-                  let first    = choices.first,
-                  let message  = first["message"] as? [String: Any],
-                  let content  = message["content"] as? String else {
-
-                let raw = data.flatMap { String(data: $0, encoding: .utf8) } ?? "no data"
-                Task { @MainActor in
-                    DebugLog.shared.log(icon: "✨", label: "OpenRouter bad response", value: String(raw.prefix(120)), ms: ms, ok: false)
-                }
-                DispatchQueue.main.async { completion(text) }
-                return
-            }
-
-            // Token usage
-            var tokenInfo: LogEntry.TokenInfo?
-            if let usage      = json["usage"]              as? [String: Any],
-               let prompt     = usage["prompt_tokens"]     as? Int,
-               let completion = usage["completion_tokens"] as? Int {
-                tokenInfo = LogEntry.TokenInfo(prompt: prompt, completion: completion)
-            }
-
-            var cleaned = content.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            // Strip any <transcript> tags the LLM might have echoed
-            cleaned = cleaned
-                .replacingOccurrences(of: "<transcript>", with: "")
-                .replacingOccurrences(of: "</transcript>", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-
-            // Hallucination guard — if cleaned output is wildly different from
-            // input length, the LLM probably answered the prompt instead of cleaning.
-            // Word count ratio: cleaned should be 0.4x – 2.0x of input.
-            let inputWords   = text.split(whereSeparator: { $0.isWhitespace }).count
-            let cleanedWords = cleaned.split(whereSeparator: { $0.isWhitespace }).count
-            if inputWords > 0 {
-                let ratio = Double(cleanedWords) / Double(inputWords)
-                if ratio < 0.4 || ratio > 2.0 {
-                    Task { @MainActor in
-                        DebugLog.shared.log(icon: "⚠️", label: "OpenRouter hallucination guard",
-                                            value: "ratio=\(String(format: "%.2f", ratio)) (\(inputWords)→\(cleanedWords) words) — using raw transcript",
-                                            ms: ms, tokens: tokenInfo, ok: false)
-                    }
-                    DispatchQueue.main.async { completion(text) }
-                    return
-                }
-            }
-
-            Task { @MainActor in
-                DebugLog.shared.log(icon: "✨", label: "OpenRouter done",
-                                    value: "\"\(String(cleaned.prefix(60)))\"",
-                                    ms: ms, tokens: tokenInfo)
-            }
-            DispatchQueue.main.async { completion(cleaned) }
-        }.resume()
+    private static func stripTags(_ s: String) -> String {
+        s.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "<transcript>", with: "")
+            .replacingOccurrences(of: "</transcript>", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

@@ -11,6 +11,10 @@ settings:
     SWIFT_VERSION: "5.9"
     MACOSX_DEPLOYMENT_TARGET: "13.0"
     CODE_SIGN_STYLE: Automatic
+    # Sprint 0: leave blank until Apple Developer cert is available locally.
+    # Once the Developer ID Application cert is in Keychain, set this to the
+    # 10-char Team ID and switch CODE_SIGN_IDENTITY to "Developer ID Application".
+    # `scripts/release.sh` also accepts SW_TEAM_ID env var as an override.
     DEVELOPMENT_TEAM: ""
     PRODUCT_BUNDLE_IDENTIFIER: cloud.solay.SolWhisper
     ENABLE_HARDENED_RUNTIME: YES
@@ -20,15 +24,39 @@ packages:
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
     majorVersion: 2.6.0
+  WhisperKit:
+    url: https://github.com/argmaxinc/argmax-oss-swift
+    from: 1.0.0
 
 targets:
   SolWhisper:
     type: application
     platform: macOS
+    # xcodegen 2.45.3 silently drops the dedicated `resources:` field. We rely
+    # on auto-classification by file extension under `sources:` instead. The
+    # excludes list keeps non-bundle files (Info.plist, entitlements, dotfiles,
+    # the example secrets stub, design docs) out of the app bundle.
     sources:
       - path: Sources
-    resources:
+        excludes:
+          - "**/*.md"
       - path: Resources
+        excludes:
+          - "Info.plist"
+          - "SolWhisper.entitlements"
+          - "local-secrets.example.json"
+          - ".DS_Store"
+          - "SkillPacks"
+          - "Skills"
+      # SkillPacks + Skills both ship as folder references (blue folders) so
+      # the nested directory structure is preserved at runtime. Without this,
+      # xcodegen flattens everything to the bundle root, and the loader's
+      # `Bundle.main.urls(... subdirectory: "Skills" / "SkillPacks/…")`
+      # returns nothing because the subdir doesn't exist in the bundle.
+      - path: Resources/SkillPacks
+        type: folder
+      - path: Resources/Skills
+        type: folder
     settings:
       base:
         INFOPLIST_FILE: Resources/Info.plist
@@ -43,6 +71,8 @@ targets:
         com.apple.security.network.client: true
     dependencies:
       - package: Sparkle
+      - package: WhisperKit
+        product: WhisperKit
     preBuildScripts:
       - name: Bump Build Number
         script: |
@@ -52,3 +82,17 @@ targets:
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEXT" "$PLIST"
           echo "Build number: $CURRENT → $NEXT"
         shell: /bin/bash
+
+  SolWhisperTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/SolWhisperTests
+    dependencies:
+      - target: SolWhisper
+    settings:
+      base:
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/SolWhisper.app/Contents/MacOS/SolWhisper"
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: cloud.solay.SolWhisperTests

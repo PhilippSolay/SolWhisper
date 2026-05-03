@@ -1,0 +1,8 @@
+{
+  "id": "one-on-one",
+  "name": "1:1",
+  "description": "Agenda recap, blockers, commitments, culture pulse.",
+  "promptTemplate": "Summarize a 1:1 conversation in Markdown:\n\n## Agenda Recap\n## Blockers\n## Commitments\n## Culture / Wellbeing\n\nParticipants: {{participants}}\n\n<transcript>\n{{transcript}}\n</transcript>",
+  "outputTemplate": "## Agenda Recap\n\n## Blockers\n\n## Commitments\n\n## Culture / Wellbeing\n",
+  "isBuiltIn": true
+}

@@ -21,6 +21,9 @@ class TranscriptionController: ObservableObject {
     // Apple Speech path
     private var appleClient: AppleSpeechClient?
 
+    // WhisperKit path
+    private var whisperClient: WhisperKitClient?
+
     /// Backend locked at startRecording() to avoid mid-session UserDefaults changes
     private var activeBackend = "apple"
 
@@ -33,6 +36,8 @@ class TranscriptionController: ObservableObject {
 
         if activeBackend == "deepgram" {
             requestMicThen { [weak self] in self?.launchDeepgram() }
+        } else if activeBackend == "whisperkit" {
+            requestMicThen { [weak self] in self?.launchWhisperKit() }
         } else {
             requestMicThen { [weak self] in self?.requestSpeechAuthThen { self?.launchAppleSpeech() } }
         }
@@ -55,6 +60,14 @@ class TranscriptionController: ObservableObject {
                     self.finish(raw.trimmingCharacters(in: .whitespaces), completion: completion)
                 }
             }
+        } else if activeBackend == "whisperkit" {
+            whisperClient?.stopAndFinalize { [weak self] finalText in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.isRecording = false
+                    self.finish((finalText ?? "").trimmingCharacters(in: .whitespaces), completion: completion)
+                }
+            }
         } else {
             appleClient?.stopAndFinalize { [weak self] finalText in
                 Task { @MainActor in
@@ -69,17 +82,25 @@ class TranscriptionController: ObservableObject {
     func togglePause() {
         guard isRecording else { return }
         isPaused.toggle()
-        audioEngine?.isPaused = isPaused
+        // Each backend has its own audio tap — forward the pause flag so the
+        // tap drops buffers instead of feeding them to the recognizer.
+        audioEngine?.isPaused = isPaused      // Deepgram path
+        appleClient?.isPaused = isPaused      // Apple Speech path
+        whisperClient?.isPaused = isPaused    // WhisperKit path
         if isPaused {
             audioLevel = 0
             spectrumBins = [Float](repeating: 0, count: AudioEngine.fftBinCount)
         }
+        DebugLog.shared.log(icon: isPaused ? "⏸" : "▶︎",
+                            label: isPaused ? "Dictation paused" : "Dictation resumed",
+                            value: activeBackend)
     }
 
     func cancel() {
         audioEngine?.stop()
         deepgramClient?.disconnect()
         appleClient?.cancel()
+        whisperClient?.cancel()
         isRecording        = false
         isPaused           = false
         liveTranscript     = ""
@@ -113,6 +134,28 @@ class TranscriptionController: ObservableObject {
             try audioEngine?.start()
         } catch {
             DebugLog.shared.log(icon: "🎙", label: "AudioEngine failed", value: "\(error)", ok: false)
+            isRecording = false
+        }
+    }
+
+    // MARK: - WhisperKit launch (non-streaming, transcribe-on-stop)
+
+    private func launchWhisperKit() {
+        liveTranscript = ""
+        isRecording    = true
+
+        let model = UserDefaults.standard.string(forKey: "whisperKitModel") ?? WhisperKitClient.defaultModel
+        let client = WhisperKitClient(model: model)
+        whisperClient = client
+
+        client.onTranscript    = { [weak self] text, _ in Task { @MainActor in self?.liveTranscript = text } }
+        client.onLevelUpdate   = { [weak self] level in Task { @MainActor in self?.audioLevel = level } }
+        client.onSpectrumUpdate = { [weak self] bins in Task { @MainActor in self?.spectrumBins = bins } }
+
+        do {
+            try client.start()
+        } catch {
+            DebugLog.shared.log(icon: "🟣", label: "WhisperKit failed", value: "\(error)", ok: false)
             isRecording = false
         }
     }

@@ -4,23 +4,35 @@ import AppKit
 // MARK: - Sidebar sections
 
 enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
-    case transcription = "Transcription"
-    case aiPolish      = "AI Polish"
-    case vocabulary    = "Vocabulary"
+    // Sidebar order matches the user-requested layout. `rawValue` is what
+    // displays in the sidebar; case names stay short for the switch.
+    case home          = "Home"
+    case transcription = "STT Short"
+    case meetings      = "STT Meetings"
+    case ocr           = "Screen Capture"
+    case audio         = "Audio"
     case hotkey        = "Hotkey"
+    case models        = "Models"
+    case skills        = "Skills"
+    case vocabulary    = "Vocabulary"
+    case integrations  = "Integrations"
     case debug         = "Debug"
-    case about         = "About"
 
     var id: Self { self }
 
     var icon: String {
         switch self {
+        case .home:          "house"
         case .transcription: "waveform"
-        case .aiPolish:      "sparkles"
-        case .vocabulary:    "text.book.closed"
+        case .meetings:      "person.2.wave.2"
+        case .ocr:           "rectangle.dashed.and.paperclip"
+        case .audio:         "speaker.wave.3"
         case .hotkey:        "keyboard"
+        case .models:        "brain"
+        case .skills:        "wand.and.stars"
+        case .vocabulary:    "text.book.closed"
+        case .integrations:  "arrow.left.arrow.right"
         case .debug:         "ant"
-        case .about:         "info.circle"
         }
     }
 }
@@ -28,7 +40,7 @@ enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
 // MARK: - Root
 
 struct SettingsView: View {
-    @State private var selection: SettingsSection? = .transcription
+    @State private var selection: SettingsSection? = .home
 
     var body: some View {
         NavigationSplitView {
@@ -40,13 +52,18 @@ struct SettingsView: View {
             .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 200)
         } detail: {
             Group {
-                switch selection ?? .transcription {
+                switch selection ?? .home {
+                case .home:          HomeSettingsView()
                 case .transcription: TranscriptionSettingsView()
-                case .aiPolish:      AIPolishSettingsView()
-                case .vocabulary:    VocabularySettingsView()
+                case .meetings:      MeetingSettingsView()
+                case .ocr:           OCRSettingsView()
+                case .audio:         AudioSettingsView()
                 case .hotkey:        HotkeySettingsView()
+                case .models:        ModelsSettingsView()
+                case .skills:        SkillsSettingsView()
+                case .vocabulary:    VocabularySettingsView()
+                case .integrations:  IntegrationsSettingsView()
                 case .debug:         DebugSettingsView()
-                case .about:         AboutSettingsView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -58,30 +75,22 @@ struct SettingsView: View {
 // MARK: - Transcription
 
 struct TranscriptionSettingsView: View {
-    @AppStorage("transcriptionBackend") private var backend            = "apple"
-    @AppStorage("deepgramApiKey")       private var deepgramApiKey     = ""
-    @AppStorage("audioEnhancement")     private var audioEnhancement   = true
     @AppStorage("showLiveTranscript")   private var showLiveTranscript = true
-    @State private var deepgramVisible = false
+    @AppStorage("dictationAutoPaste")   private var dictationAutoPaste = true
+
+    // Additive clipboard — appends each transcript to the pasteboard instead
+    // of replacing it. Optional clear-on-paste wipes after ⌘V (needs AX).
+    @AppStorage("clipboardAdditive")           private var clipboardAdditive = false
+    @AppStorage("clipboardAdditiveClearOnPaste") private var clipboardClearOnPaste = true
+
+    // AI Polish — folded in from the deprecated AI Polish section.
+    @AppStorage("enableLLMPolish")      private var enableLLMPolish    = true
+    @AppStorage("polishRemoveFiller")   private var removeFiller       = true
+    @AppStorage("polishFixPunctuation") private var fixPunctuation     = true
+    @AppStorage("polishFixGrammar")     private var fixGrammar         = false
 
     var body: some View {
         Form {
-            Section("Engine") {
-                Picker("Backend", selection: $backend) {
-                    Text("Apple Speech  (free · on-device)").tag("apple")
-                    Text("Deepgram nova-3  (higher accuracy)").tag("deepgram")
-                }
-
-                if backend == "apple" {
-                    Text("On-device · no API key · works offline")
-                        .font(.caption).foregroundColor(.secondary)
-                } else {
-                    APIKeyField(label: "Deepgram API Key",
-                                text: $deepgramApiKey,
-                                visible: $deepgramVisible)
-                }
-            }
-
             Section {
                 Toggle("Show live transcript", isOn: $showLiveTranscript)
             } header: {
@@ -92,23 +101,138 @@ struct TranscriptionSettingsView: View {
             }
 
             Section {
-                Toggle("Audio enhancement", isOn: $audioEnhancement)
-                if audioEnhancement {
-                    Text("Compression · AGC · Noise gate — boosts quiet mics and suppresses background noise.")
+                Toggle(isOn: $dictationAutoPaste) {
+                    HStack(spacing: 4) {
+                        Text("Paste result text")
+                        Image(systemName: "questionmark.circle")
+                            .foregroundColor(.secondary)
+                            .help("On: paste the polished transcript into the previously-focused app. Off: only copy to clipboard so you can paste manually with ⌘V.")
+                    }
+                }
+                .toggleStyle(.switch)
+
+                Toggle("Additive clipboard", isOn: $clipboardAdditive)
+                    .toggleStyle(.switch)
+                    .help("Each new dictation appends to the clipboard with a blank-line separator instead of replacing it.")
+
+                if clipboardAdditive {
+                    Toggle("Clear automatically", isOn: $clipboardClearOnPaste)
+                        .toggleStyle(.switch)
+                        .padding(.leading, 16)
+                        .help("After you paste with ⌘V, the clipboard is wiped — only if SolWhisper still owns it. Requires Accessibility permission.")
+                }
+            } header: {
+                Text("Output")
+            } footer: {
+                if clipboardAdditive {
+                    Text("Each new dictation is appended to the clipboard instead of replacing it. Clear automatically empties the clipboard after the next ⌘V (requires Accessibility permission).")
                         .font(.caption).foregroundColor(.secondary)
                 }
-            } header: { Text("Audio") }
+            }
+            .onChange(of: clipboardAdditive)         { _ in refreshClearTap() }
+            .onChange(of: clipboardClearOnPaste)     { _ in refreshClearTap() }
+
+            Section {
+                Toggle("Polish transcription with AI", isOn: $enableLLMPolish)
+                if enableLLMPolish {
+                    Toggle("Remove filler words",            isOn: $removeFiller)
+                    Toggle("Fix punctuation & capitalization", isOn: $fixPunctuation)
+                    Toggle("Fix grammar",                     isOn: $fixGrammar)
+                }
+            } header: { Text("AI Polish") } footer: {
+                Text("Cleans up the raw transcript via the LLM picked in Models → Routing. Less cleanup = closer to your original words.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
         }
         .formStyle(.grouped)
         .navigationTitle("Transcription")
     }
+
+    @MainActor
+    private func refreshClearTap() {
+        if clipboardAdditive && clipboardClearOnPaste {
+            AdditiveClipboard.shared.startClearOnPasteIfNeeded()
+        } else {
+            AdditiveClipboard.shared.stopClearOnPaste()
+        }
+    }
 }
 
-// MARK: - AI Polish
+/// Reusable WhisperKit model picker — used twice in `ModelsSettingsView`,
+/// once for STT Short, once for STT Meetings.
+struct WhisperKitModelPicker: View {
+    let title: String
+    @Binding var modelID: String
 
-struct AIPolishSettingsView: View {
+    @State private var downloadProgress: Double? = nil
+    @State private var downloadError: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Picker(title, selection: $modelID) {
+                ForEach(WhisperKitClient.supportedModels, id: \.self) { m in
+                    Text(modelLabel(for: m)).tag(m)
+                }
+            }
+            .onChange(of: modelID) { _ in
+                downloadProgress = nil
+                downloadError = nil
+                WhisperKitClient.resetCache()
+            }
+
+            if let progress = downloadProgress {
+                ProgressView(value: progress) {
+                    Text("Downloading \(modelID)…").font(.caption)
+                }
+            } else if WhisperKitClient.isModelDownloaded(modelID) {
+                Text("✓ \(modelID) available offline")
+                    .font(.caption).foregroundColor(.secondary)
+            } else {
+                Button("Download \(modelID) now") {
+                    download()
+                }
+            }
+            if let err = downloadError {
+                Text(err).font(.caption).foregroundColor(.red)
+            }
+        }
+    }
+
+    private func modelLabel(for model: String) -> String {
+        switch model {
+        case "tiny.en":          return "tiny.en — 39 MB · fastest, lower accuracy"
+        case "base.en":          return "base.en — 74 MB · balanced (default)"
+        case "small.en":         return "small.en — 244 MB · better accuracy"
+        case "large-v3-turbo":   return "large-v3-turbo — ~1.5 GB · best accuracy"
+        default:                 return model
+        }
+    }
+
+    private func download() {
+        let model = modelID
+        downloadProgress = 0
+        downloadError = nil
+        Task { @MainActor in
+            do {
+                _ = try await WhisperKitClient.downloadModel(model) { fraction in
+                    Task { @MainActor in downloadProgress = fraction }
+                }
+                downloadProgress = nil
+            } catch {
+                downloadError = "\(error.localizedDescription)"
+                downloadProgress = nil
+            }
+        }
+    }
+}
+
+// (Old AI Polish + About settings views were deleted — folded into
+//  Transcription and Home respectively.)
+
+#if false   // begin: dead AIPolish view (kept fenced out so type stays defined nowhere)
+private struct _DELETE_AIPolish_DEAD: View {
+    @EnvironmentObject private var secrets: SecretsStore
     @AppStorage("enableLLMPolish")       private var enableLLMPolish      = true
-    @AppStorage("openRouterApiKey")      private var openRouterApiKey     = ""
     @AppStorage("openRouterModel")       private var openRouterModel      = "anthropic/claude-3-5-haiku"
     @AppStorage("polishRemoveFiller")    private var removeFiller         = true
     @AppStorage("polishFixPunctuation")  private var fixPunctuation       = true
@@ -152,11 +276,13 @@ struct AIPolishSettingsView: View {
 
                 Section("API Key") {
                     APIKeyField(label: "OpenRouter API Key",
-                                text: $openRouterApiKey,
+                                text: $secrets.openRouterApiKey,
                                 visible: $openRouterVisible)
                     Link("Get a free OpenRouter key →",
                          destination: URL(string: "https://openrouter.ai")!)
                         .font(.system(size: 12))
+                    Text("Stored securely in macOS Keychain.")
+                        .font(.caption).foregroundColor(.secondary)
                 }
 
                 Section("Model") {
@@ -186,6 +312,7 @@ struct AIPolishSettingsView: View {
         )
     }
 }
+#endif      // end: dead AIPolish view
 
 // MARK: - Vocabulary
 
@@ -267,56 +394,121 @@ struct HotkeySettingsView: View {
     @AppStorage("hotkeyModifierMask")      private var hotkeyModifierMask      = 10
     @AppStorage("pauseHotkeyKeyCode")      private var pauseHotkeyKeyCode      = 35
     @AppStorage("pauseHotkeyModifierMask") private var pauseHotkeyModifierMask = 10
-    @State private var isRecordingHotkey      = false
-    @State private var isRecordingPauseHotkey = false
+    /// Snip hotkey ships unset (0/0). User picks one in this UI.
+    @AppStorage("snipHotkeyKeyCode")       private var snipHotkeyKeyCode       = 0
+    @AppStorage("snipHotkeyModifierMask")  private var snipHotkeyModifierMask  = 0
+    /// Meeting toggle hotkey — same shape: one combo, toggles start/stop.
+    @AppStorage("meetingHotkeyKeyCode")      private var meetingHotkeyKeyCode      = 0
+    @AppStorage("meetingHotkeyModifierMask") private var meetingHotkeyModifierMask = 0
+    /// Transcripts window hotkey — global open.
+    @AppStorage("transcriptsHotkeyKeyCode")      private var transcriptsHotkeyKeyCode      = 0
+    @AppStorage("transcriptsHotkeyModifierMask") private var transcriptsHotkeyModifierMask = 0
+    @State private var isRecordingHotkey         = false
+    @State private var isRecordingPauseHotkey    = false
+    @State private var isRecordingSnipHotkey     = false
+    @State private var isRecordingMeetingHotkey  = false
+    @State private var isRecordingTranscriptsHotkey = false
 
     var body: some View {
         Form {
             Section {
-                HStack {
-                    Text("Record / Stop")
-                    Spacer()
-                    HotkeyRecorderButton(
-                        keyCode:      $hotkeyKeyCode,
-                        modifierMask: $hotkeyModifierMask,
-                        isRecording:  $isRecordingHotkey
-                    )
-                }
-                HStack {
-                    Text("Current").foregroundColor(.secondary)
-                    Spacer()
-                    Text(hotkeyDisplayString(keyCode: hotkeyKeyCode, modifierMask: hotkeyModifierMask))
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
-                }
-            }
-
-            Section {
-                HStack {
-                    Text("Pause / Resume")
-                    Spacer()
-                    HotkeyRecorderButton(
-                        keyCode:      $pauseHotkeyKeyCode,
-                        modifierMask: $pauseHotkeyModifierMask,
-                        isRecording:  $isRecordingPauseHotkey
-                    )
-                }
-                HStack {
-                    Text("Current").foregroundColor(.secondary)
-                    Spacer()
-                    Text(hotkeyDisplayString(keyCode: pauseHotkeyKeyCode, modifierMask: pauseHotkeyModifierMask))
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
-                }
+                HotkeyRow(
+                    title: "Start/Stop Recording",
+                    subtitle: "Starts and stops dictation",
+                    keyCode:      $hotkeyKeyCode,
+                    modifierMask: $hotkeyModifierMask,
+                    isRecording:  $isRecordingHotkey
+                )
+                HotkeyRow(
+                    title: "Pause / Resume",
+                    subtitle: "Pauses without losing the recording",
+                    keyCode:      $pauseHotkeyKeyCode,
+                    modifierMask: $pauseHotkeyModifierMask,
+                    isRecording:  $isRecordingPauseHotkey
+                )
+                HotkeyRow(
+                    title: "Start / Stop Meeting",
+                    subtitle: "Toggles meeting recording",
+                    keyCode:      $meetingHotkeyKeyCode,
+                    modifierMask: $meetingHotkeyModifierMask,
+                    isRecording:  $isRecordingMeetingHotkey
+                )
+                HotkeyRow(
+                    title: "Open Transcripts",
+                    subtitle: "Opens the meeting browser window",
+                    keyCode:      $transcriptsHotkeyKeyCode,
+                    modifierMask: $transcriptsHotkeyModifierMask,
+                    isRecording:  $isRecordingTranscriptsHotkey
+                )
+                HotkeyRow(
+                    title: "Text Snap",
+                    subtitle: "Drag a region; recognized text goes to clipboard",
+                    keyCode:      $snipHotkeyKeyCode,
+                    modifierMask: $snipHotkeyModifierMask,
+                    isRecording:  $isRecordingSnipHotkey
+                )
+            } header: {
+                Text("Keyboard Shortcuts")
             } footer: {
-                Text("Click the button then press your desired key combination. A modifier key (⌘ ⌥ ⌃ ⇧) is required.")
+                Text("Click a shortcut field, then press your desired combination. A modifier key (⌘ ⌥ ⌃ ⇧) is required. Click ✗ to clear.")
                     .font(.caption).foregroundColor(.secondary)
             }
         }
         .formStyle(.grouped)
         .navigationTitle("Hotkey")
+    }
+}
+
+/// Compact one-row layout for a single hotkey binding. Title + subtitle on the
+/// left, X (clear) + chip-style recorder on the right. Pattern modeled on the
+/// macOS System Settings → Keyboard → Shortcuts panel.
+private struct HotkeyRow: View {
+    let title: String
+    let subtitle: String
+    @Binding var keyCode: Int
+    @Binding var modifierMask: Int
+    @Binding var isRecording: Bool
+
+    private var isSet: Bool { keyCode > 0 && modifierMask > 0 }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 13, weight: .medium))
+                Text(subtitle).font(.system(size: 11)).foregroundColor(.secondary)
+            }
+            Spacer(minLength: 16)
+            if isRecording {
+                // Cancel the listening state — flipping the binding makes the
+                // recorder NSView re-render to its idle state.
+                Button {
+                    isRecording = false
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Cancel — keep current shortcut")
+            } else if isSet {
+                Button {
+                    keyCode = 0
+                    modifierMask = 0
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear shortcut")
+            }
+            HotkeyRecorderButton(
+                keyCode:      $keyCode,
+                modifierMask: $modifierMask,
+                isRecording:  $isRecording
+            )
+        }
+        .padding(.vertical, 2)
     }
 }
 
@@ -340,59 +532,18 @@ struct DebugSettingsView: View {
                         .frame(height: 260)
                 }
             }
+
+            Section {
+                Button("Open Setup Guide…") {
+                    (NSApp.delegate as? AppDelegate)?.openOnboarding()
+                }
+            } header: { Text("Tools") } footer: {
+                Text("Re-runs the first-launch onboarding flow. Useful for testing.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
         }
         .formStyle(.grouped)
         .navigationTitle("Debug")
-    }
-}
-
-// MARK: - About
-
-struct AboutSettingsView: View {
-    private var appVersion: String {
-        let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-        let b = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
-        return "v\(v) (\(b))"
-    }
-
-    var body: some View {
-        Form {
-            Section {
-                HStack {
-                    Spacer()
-                    VStack(spacing: 10) {
-                        Image("SolWhisperLogo")
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(width: 64, height: 64)
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        Text("SolWhisper").fontWeight(.semibold)
-                        Text(appVersion)
-                            .font(.system(size: 12))
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
-                }
-                .padding(.vertical, 8)
-            }
-
-            Section {
-                Link("Deepgram Console", destination: URL(string: "https://console.deepgram.com")!)
-                Link("OpenRouter",       destination: URL(string: "https://openrouter.ai")!)
-            }
-
-            Section {
-                HStack {
-                    Spacer()
-                    Text("Made with Love  ·  Studio Solay")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
-                    Spacer()
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .navigationTitle("About")
     }
 }
 

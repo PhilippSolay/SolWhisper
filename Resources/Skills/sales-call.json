@@ -1,0 +1,8 @@
+{
+  "id": "sales-call",
+  "name": "Sales Call",
+  "description": "Discovery findings, objections raised, next steps, and proposed terms.",
+  "promptTemplate": "You are summarizing a sales conversation. Produce a Markdown summary with the following sections:\n\n## Discovery\nKey facts about the prospect (use, scale, current tooling, decision process).\n\n## Pains and Objections\nWhat problems they raised. What concerns they expressed.\n\n## Proposed Terms\nAny pricing, scope, or timeline floated.\n\n## Next Steps\nWho does what by when.\n\nParticipants: {{participants}}\n\n<transcript>\n{{transcript}}\n</transcript>",
+  "outputTemplate": "## Discovery\n\n## Pains and Objections\n\n## Proposed Terms\n\n## Next Steps\n",
+  "isBuiltIn": true
+}
