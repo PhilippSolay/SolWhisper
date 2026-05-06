@@ -2,7 +2,114 @@
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
     <title>SolWhisper Updates</title>
-    <language>en</language>
+    <language>en</language>    <item>
+      <title>Version 0.5.0</title>
+      <pubDate>Wed, 06 May 2026 21:42:43 +0800</pubDate>
+      <sparkle:version>127</sparkle:version>
+      <sparkle:shortVersionString>0.5.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+# SolWhisper v0.5.0
+
+The biggest release since launch — full speaker diarization, an MCP server that makes Claude Desktop / Cursor / Zed meeting-aware, voice profiles for recurring collaborators, and calendar integration. Plus a major LLM-routing expansion and a polished transcript UI.
+
+## Headline features
+
+### 🎙 Speaker diarization
+Real **Speaker A / B / C** labels on every transcript — not just the channel-based `[Me] / [Other]` split that only worked for live two-channel recordings. Imported files now get proper speaker separation too.
+
+- **Three engines**: AssemblyAI (cloud, accurate on noisy audio), Deepgram (cloud, fast), FluidAudio (local CoreML pyannote, scaffolded for full on-device privacy in v0.6).
+- **Per-segment letter assignment** mapped onto your existing transcript by time-overlap.
+- **LLM-powered name suggestions** — "Speaker A → Pierre, Speaker B → Ricardo" inferred from meeting context, calendar attendees, and transcript content. Per-row review with confidence scoring.
+
+### 🔌 MCP server — make your AI assistant meeting-aware
+- **Bundled local binary** (`solwhisper-mcp`) ships inside the app, ready for Claude Desktop / Cursor / Zed.
+- **One-click config snippets** in Settings → Integrations → MCP server — copy the JSON for Claude Desktop or Cursor, paste, done.
+- **Stdio transport** — no network port, no exposure beyond the parent process.
+- **5 tools**: `list_meetings`, `get_meeting`, `search_transcripts`, `list_dictation_history`, `list_skills`.
+- **3 resource URIs per meeting**: transcript Markdown, summary Markdown, metadata JSON.
+- Use case: "Claude, summarize my last sales call" / "Find the action item from yesterday's standup" — answered without leaving your assistant.
+
+### 👥 Voice profiles
+- Save a name + voice fingerprint for any speaker in any transcript via the rename popover's **Save** button.
+- 256-dim embeddings extracted locally via FluidAudio — never leaves the device.
+- Each named speaker becomes a profile that future meetings can auto-match against (full auto-matching lands in v0.6 once the embedding pipeline is fully wired through diarization).
+- Settings → People shows every profile with its current state ("name only" vs. "voiceprint stored") and a one-click delete.
+
+### 📅 Calendar integration
+- macOS Calendar attendees from the event scheduled around recording time become **rename suggestions** in the speaker popover.
+- Match-and-confirm dialog when multiple events overlap.
+- Attendees also feed into the LLM speaker matcher for higher-quality auto-naming.
+- Granted lazily — no permission prompt until you opt in.
+
+### 🤖 Multi-provider LLM routing
+- **Six direct integrations** added/expanded: Anthropic (Claude 4.7 / 4.6 / 4.5), OpenAI (GPT-4o, o1, o3), Google (Gemini 2.0 Flash + 1.5 Pro), Groq (Llama 3.3, DeepSeek R1), OpenRouter (everything else), Ollama (local).
+- **Per-role routing** — Dictation cleanup, Meeting cleanup, and Meeting summary each get their own model. Mix providers freely.
+- **Configured Models picker** with provider icons, edit, delete. Every preset list updated to current model generations.
+- **Legacy model migration** — old configs auto-upgrade silently on launch.
+
+### 📚 Meeting-summary skill pack
+- 10 type-specific summary templates that go far beyond generic bullet lists:
+  - **Client discovery** — MEDDIC / BANT-lite qualification
+  - **Architectural review** — ADR-style decisions with context, options, consequences, revisit-when
+  - **Hiring interview** — per-competency signal table, evidence-quoted, with bias guardrails
+  - **1:1** — CAPS (Career, Achievements, Problems, Support) with privacy redaction rules
+  - **Scrum standup** — round-robin per-person status table + escalations
+  - **Retrospective** — Start / Stop / Continue with action ownership
+  - **Exploration** — analytical ideation with hypotheses, references, JTBD
+  - **Development session** — pair-programming gotchas, TODOs, design decisions inline
+  - **User interview** — JTBD framework, verbatim-quote rules, hypothesis tracking
+  - **Creative brainstorm** — full idea inventory, themes, top picks, parking-lot
+- **Auto-detect** meeting type from transcript, or pick manually.
+- **Custom skills** — built-in flat-skill editor for your own quick templates.
+- **Editable skill pack** — every Markdown module ships into your user folder; tweak with any editor.
+
+## Polished transcript UI
+
+- **New muted speaker palette** — eight desaturated tones designed for dark backgrounds, replacing the saturated SwiftUI defaults. Same hash-stable assignment.
+- **Tighter column spacing** — consistent 20px gaps between timestamp, speaker, and text columns.
+- **Em-dash placeholder** for unknown speakers so the text column stays aligned.
+- **Your own name in white** — set your display name in Settings → People → You, and every speaker badge matching your name (case-insensitive) plus the `[Me]` mic channel renders in white. Spot yourself at a glance across any transcript.
+- **Unified Save button** in the rename popover — renames the speaker *and* captures a voiceprint in a single click. The earlier two-button "Save / Save as profile" split is gone.
+- **Improved popover title** — "Speaker B is…" instead of "Rename Speaker B" so it flows into the input field.
+- **Profile dedupe + upgrade** — saving a name that already exists as a name-only profile no longer skips the embedding capture. Existing profiles silently graduate to voiceprint-stored.
+
+## Settings reorganization
+
+- **Settings → People** — voice profiles + calendar access + your own display name in one place.
+- **Settings → Integrations → MCP server** — one-click config snippets for Claude Desktop and Cursor.
+- **Settings → Models** — visual library with provider icons, edit pencil, delete. Per-role assignment.
+
+## Under the hood
+
+- New `Sources/Diarization/` module — engine abstraction + AssemblyAI / Deepgram / FluidAudio adapters.
+- New `Sources/People/` module — `VoiceProfile`, `VoiceProfileStore`, `VoiceProfileEmbedder`, `VoiceMatcher`.
+- New `Sources/Integrations/CalendarIntegration.swift` — EventKit wrapper with status reporting.
+- New `Sources/LLM/` clients — `OpenAIClient`, `GoogleClient`, `GroqClient` direct integrations alongside Anthropic + OpenRouter + Ollama.
+- New `Sources/PostProcessing/` — `SkillPackLoader`, `SkillsRegistry`, `CleanReportSheet`, `CleanupPass` rewrite.
+- `MCP/` directory — separate `solwhisper-mcp` build target, packaged inside `SolWhisper.app/Contents/MacOS/`.
+- Schema migrations on `Meeting` + `TranscriptSegment` for diarization metadata.
+
+## Compatibility & known limitations
+
+- **macOS 14+** required for voiceprint extraction (FluidAudio's floor). macOS 13 still gets every other feature; voice profiles fall back to name-only.
+- **Voiceprint capture** still requires a diarized meeting (segments tagged with letter `speakerID`). Live recordings on `[Me] / [Other]` channels need a Diarize pass first before saving profiles.
+- **Auto-matching** of voiceprints across meetings is scaffolded but not yet wired end-to-end — lands in v0.6.
+- **MCP server** is read-only in v0.5. Mutating tools (delete meeting, edit transcript, mark action complete) come in v0.6.
+- **Notarization** — this build is signed with a developer certificate but **not yet notarized** by Apple. macOS may show a warning on first launch; right-click → Open the first time. Notarized builds resume in the next release once the certificate is in hand.
+
+## Upgrade
+
+- **Sparkle auto-update** — already-installed users will be prompted automatically once the appcast updates.
+- **Fresh install** — download the DMG from the GitHub release page.
+- **Settings preserved** — your existing model configs, skill packs, and meeting history carry forward unchanged.
+      ]]></description>
+      <enclosure url="https://github.com/PhilippSolay/SolWhisper/releases/download/v0.5.0/SolWhisper-v0.5.0.dmg"
+                 sparkle:edSignature="rdsY8yn2NoUkV5nnZDGUw/oP0Xv8jX2mRd+VPpHLn6c4Ew7ZWlKXmBu1zwrTksaBzEJE88aHhtNd2z8HrZpFBQ=="
+                 length="9433688"
+                 type="application/octet-stream"/>
+    </item>
+
     <item>
       <title>Version 0.3.2</title>
       <pubDate>Sat, 02 May 2026 01:30:00 +0000</pubDate>
