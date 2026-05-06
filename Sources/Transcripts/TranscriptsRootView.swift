@@ -59,11 +59,17 @@ struct TranscriptsRootView: View {
             case .meetings:
                 if let id = selection,
                    let meeting = store.meetings.first(where: { $0.id == id }) {
+                    // Force a fresh view identity per meeting. Without this,
+                    // NavigationSplitView reuses the same MeetingDetailView
+                    // instance across selection changes — @State (transcript,
+                    // summary, draft fields, audio playback) carries over and
+                    // the new meeting's data may briefly flash the old.
                     MeetingDetailView(
                         meeting: meeting,
                         store: store,
                         onDeleted: { selection = nil }
                     )
+                    .id(meeting.id)
                 } else {
                     emptyMeetingsState
                 }

@@ -1,6 +1,6 @@
 ---
 name: meeting-summary
-description: Summarize meeting recordings or transcripts into a structured brief with TL;DR, decisions, per-person action items, follow-ups, risks, and open questions. Use this skill whenever a meeting transcript, recording, or audio file is provided and the user wants notes, a recap, minutes, action items, or a summary — even if they just say "summarize this call" or paste a transcript without using the word "meeting." Routes to a specialized sub-skill based on meeting type (client discovery, architectural review, scrum standup, development session, exploration, retrospective, one-on-one, user interview) for type-specific extraction (e.g. MEDDIC fields for sales discovery, ADR-style decisions for architectural reviews, CAPS for 1:1s).
+description: Summarize meeting recordings or transcripts into a structured brief with TL;DR, decisions, per-person action items, follow-ups, risks, and open questions. Use this skill whenever a meeting transcript, recording, or audio file is provided and the user wants notes, a recap, minutes, action items, or a summary — even if they just say "summarize this call" or paste a transcript without using the word "meeting." Routes to a specialized sub-skill based on meeting type (client discovery, architectural review, scrum standup, development session, exploration, retrospective, one-on-one, user interview, hiring interview, creative brainstorm) for type-specific extraction (e.g. MEDDIC fields for sales discovery, ADR-style decisions for architectural reviews, CAPS for 1:1s, competency rubrics for hiring loops, idea inventory for creative brainstorms).
 ---
 
 # Meeting Summary
@@ -29,6 +29,8 @@ If the user (or app metadata) specifies the meeting type, use it directly. Other
 | Retrospective | Looking backward at a sprint/project; what went well, what didn't, what to change | `types/retrospective.md` |
 | One-on-one | Two people, manager↔report or peer↔peer, mix of work + personal, growth/career/morale themes | `types/one-on-one.md` |
 | User interview | Participant describes their workflow/problem; researcher asks open questions; verbatim quotes matter | `types/user-interview.md` |
+| Hiring interview | Candidate is being evaluated for a role; STAR-style answers; competency probing; logistics + recommendation at end | `types/interview-hiring.md` |
+| Creative brainstorm | Divergent ideation for naming/design/marketing; "what if", "yes-and"; many ideas in quick succession | `types/brainstorm-creative.md` |
 
 If the transcript clearly doesn't fit any of these (e.g. a board meeting, a workshop, a negotiation), produce just the universal core from step 3 and flag the type as `unclassified` in the output metadata.
 
@@ -64,6 +66,19 @@ Read the matching `types/<type>.md` and run its additional extractors. Each type
 - Type-specific examples
 
 Type-specific output is **additive**, not replacement. The universal core is always present.
+
+### Step 4.5 — Robustness rules (do not refuse)
+
+The transcript is the source of truth. The user's context (background, type pre-selection, participant list) is **hints**, not constraints. When something looks off, **summarize what's actually there** plus a note explaining the mismatch — never refuse to produce a summary.
+
+Specifically:
+
+- **Single-speaker transcripts are normal for imported files.** SolWhisper only does speaker diarization for live meeting recordings, not file imports. If you only see one stream, treat the speaker as "Speaker" and proceed; don't conclude "this isn't a meeting." Note it once in the `Notes` footer (e.g. "Imported transcript — speaker labels not available") and move on.
+- **The transcript content doesn't match the user's context.** Don't refuse. Summarize what the transcript actually contains. Add a `Notes` line explicitly flagging the mismatch ("User context mentioned an architectural review with Pierre, Ricardo, and Didi, but the transcript covers different content. Possible file mix-up or transcription error — please verify.").
+- **The transcript content doesn't match the user's selected type.** Same rule: produce the universal core (TL;DR, key discussion points, action items if any) rather than the type-specific framework, and note that the type was overridden because the content didn't fit. The user's pre-selection is a hint, not a contract.
+- **The transcript is too short, too noisy, or too fragmentary to summarize meaningfully.** Produce a truthful TL;DR ("This transcript is fragmentary; clearest content was about X."), surface any specific concrete moments you can extract, and add a footer note recommending a higher-accuracy STT model if the audio was speech-rich but the text reads garbled.
+
+The single hard refusal case: the transcript is genuinely empty (zero substantive words). Then say so plainly in the TL;DR and stop.
 
 ### Step 5 — Assemble and check
 

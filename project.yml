@@ -2,14 +2,14 @@ name: SolWhisper
 options:
   bundleIdPrefix: cloud.solay
   deploymentTarget:
-    macOS: "13.0"
+    macOS: "14.0"
   xcodeVersion: "15.0"
   generateEmptyDirectories: true
 
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
     CODE_SIGN_STYLE: Automatic
     # Sprint 0: leave blank until Apple Developer cert is available locally.
     # Once the Developer ID Application cert is in Keychain, set this to the
@@ -27,6 +27,9 @@ packages:
   WhisperKit:
     url: https://github.com/argmaxinc/argmax-oss-swift
     from: 1.0.0
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio.git
+    from: 0.14.4
 
 targets:
   SolWhisper:
@@ -73,6 +76,9 @@ targets:
       - package: Sparkle
       - package: WhisperKit
         product: WhisperKit
+      - package: FluidAudio
+        product: FluidAudio
+      - target: solwhisper-mcp
     preBuildScripts:
       - name: Bump Build Number
         script: |
@@ -81,6 +87,21 @@ targets:
           NEXT=$((CURRENT + 1))
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEXT" "$PLIST"
           echo "Build number: $CURRENT → $NEXT"
+        shell: /bin/bash
+    postBuildScripts:
+      - name: Copy MCP binary into bundle
+        script: |
+          # Copy the built solwhisper-mcp binary into SolWhisper.app/Contents/MacOS
+          # so users can point Claude Desktop / Cursor at a stable absolute path.
+          SRC="${BUILT_PRODUCTS_DIR}/solwhisper-mcp"
+          DEST="${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/MacOS/solwhisper-mcp"
+          if [ -f "$SRC" ]; then
+            cp "$SRC" "$DEST"
+            chmod +x "$DEST"
+            echo "Bundled solwhisper-mcp at $DEST"
+          else
+            echo "warning: solwhisper-mcp binary not found at $SRC"
+          fi
         shell: /bin/bash
 
   SolWhisperTests:
@@ -96,3 +117,19 @@ targets:
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/SolWhisper.app/Contents/MacOS/SolWhisper"
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: cloud.solay.SolWhisperTests
+
+  # MCP server CLI binary. Spawned by Claude Desktop / Cursor over stdio.
+  # Bundled inside SolWhisper.app/Contents/MacOS/ so users can point their
+  # MCP client at a stable path without separate install steps.
+  solwhisper-mcp:
+    type: tool
+    platform: macOS
+    sources:
+      - path: MCP
+    settings:
+      base:
+        PRODUCT_NAME: solwhisper-mcp
+        SWIFT_VERSION: "5.9"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: YES

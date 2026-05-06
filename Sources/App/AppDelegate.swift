@@ -126,6 +126,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         scanForOrphanMeetingsOnLaunch()
         bindMeetingPillToController()
 
+        // Convert any pre-alpha.4 legacy routing state into ConfiguredModels.
+        // One-shot, gated by `modelStoreLegacyMigrationDone`.
+        LegacyModelMigration.migrateIfNeeded()
+
         // Eagerly initialize persistent stores so the Home tab's stats are
         // populated on first render. Without this, the singletons lazy-init
         // when the view first observes them — which is fine functionally
@@ -213,7 +217,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             transcriptionController: transcriptionController,
             onStop:   { [weak self] in self?.meetingController.stop()  },
             onCancel: { [weak self] in self?.meetingController.pause() },
-            onPause:  { [weak self] in self?.toggleMeetingPause()       }
+            onPause:  { [weak self] in self?.toggleMeetingPause()       },
+            // Meetings don't drive live partials — and any stale text from a
+            // prior dictation would flash up below the meeting pill.
+            showsLiveTranscript: false
         )
         pill.phaseState.mode = .meeting
         meetingPillController = pill
@@ -369,10 +376,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         meetingMenuItem = recordMeeting
         menu.addItem(recordMeeting)
 
-        let upload = NSMenuItem(title: "Upload audio file…", action: #selector(uploadAudioFile), keyEquivalent: "")
-        upload.image = trayIcon("arrow.up.doc")
-        menu.addItem(upload)
-
         let snipKE = menuKeyEquivalent(
             keyCode: UserDefaults.standard.integer(forKey: "snipHotkeyKeyCode"),
             modifierMask: UserDefaults.standard.integer(forKey: "snipHotkeyModifierMask")
@@ -382,6 +385,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         snip.keyEquivalentModifierMask = snipKE.modifiers
         snip.image = trayIcon("rectangle.dashed.and.paperclip")
         menu.addItem(snip)
+
+        let upload = NSMenuItem(title: "Upload audio file…", action: #selector(uploadAudioFile), keyEquivalent: "")
+        upload.image = trayIcon("arrow.up.doc")
+        menu.addItem(upload)
 
         let transcriptsKE = menuKeyEquivalent(
             keyCode: UserDefaults.standard.integer(forKey: "transcriptsHotkeyKeyCode"),

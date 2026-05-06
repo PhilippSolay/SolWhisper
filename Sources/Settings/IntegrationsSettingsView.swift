@@ -23,6 +23,13 @@ struct IntegrationsSettingsView: View {
     var body: some View {
         Form {
             Section {
+                MCPCard()
+            } header: { Text("MCP server") } footer: {
+                Text("Lets MCP-aware AI assistants (Claude Desktop, Cursor, Zed) query your meetings, transcripts, dictation history, and skills. Spawned by the client over stdio — no network port, no exposure beyond the parent process.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            Section {
                 Toggle("Enabled", isOn: $hermesEnabled)
                 TextField("Webhook URL", text: $hermesURL)
                     .textFieldStyle(.roundedBorder)

@@ -5,20 +5,77 @@ import Foundation
 /// each subfolder as a `SkillPack`.
 enum SkillPackLoader {
 
-    /// Loads built-in packs from the bundle. Each pack is a folder under
-    /// `Resources/SkillPacks/`. The folder name becomes the pack's ID.
+    /// Loads built-in packs **after seeding them into the user folder** so
+    /// they show up there as editable copies. Returns nothing on its own
+    /// once seeding has run — `loadUserPacks()` is the source of truth.
+    /// Kept on the public surface for symmetry with `SkillsRegistry` even
+    /// though it now no-ops.
     static func loadBuiltInPacks() -> [SkillPack] {
-        guard let baseURL = builtInPacksRoot() else { return [] }
-        return loadPacks(at: baseURL, isBuiltIn: true)
+        seedBuiltInPacksIfMissing()
+        return []   // user folder is canonical post-seed
     }
 
     /// Loads user-installed packs from
-    /// `~/Library/Application Support/SolWhisper/SkillPacks/`.
+    /// `~/Library/Application Support/SolWhisper/SkillPacks/`. After the
+    /// first launch this includes the bundled meeting-summary pack as a
+    /// fully-editable copy.
     static func loadUserPacks() -> [SkillPack] {
         let url = userPacksRoot()
         try? FileManager.default.createDirectory(
             at: url, withIntermediateDirectories: true)
         return loadPacks(at: url, isBuiltIn: false)
+    }
+
+    /// Re-copies any missing pack files from the bundle into the user
+    /// folder. Used by the "Restore default pack" button.
+    static func restoreMissingBuiltInPacks() {
+        seedBuiltInPacksIfMissing(force: false)
+    }
+
+    /// Walks bundled packs and copies anything not already in the user
+    /// folder. Per-file granularity so a user who deleted ONE module from
+    /// a pack gets just that module back, without losing edits to the rest.
+    /// `force == true` would overwrite — we never do that automatically.
+    private static func seedBuiltInPacksIfMissing(force: Bool = false) {
+        guard let bundleRoot = builtInPacksRoot() else { return }
+        let userRoot = userPacksRoot()
+        try? FileManager.default.createDirectory(
+            at: userRoot, withIntermediateDirectories: true)
+
+        guard let packDirs = try? FileManager.default.contentsOfDirectory(
+            at: bundleRoot, includingPropertiesForKeys: [.isDirectoryKey]) else {
+            return
+        }
+        let fm = FileManager.default
+        for srcPack in packDirs {
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: srcPack.path, isDirectory: &isDir),
+                  isDir.boolValue else { continue }
+            let destPack = userRoot.appendingPathComponent(srcPack.lastPathComponent,
+                                                            isDirectory: true)
+            try? fm.createDirectory(at: destPack, withIntermediateDirectories: true)
+            seedFiles(from: srcPack, to: destPack, force: force)
+        }
+    }
+
+    /// Recursively copies missing files from `src` into `dest`. Skips any
+    /// files that already exist on disk (so user edits stay intact).
+    private static func seedFiles(from src: URL, to dest: URL, force: Bool) {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(
+            at: src, includingPropertiesForKeys: [.isDirectoryKey]) else { return }
+        for entry in entries {
+            let target = dest.appendingPathComponent(entry.lastPathComponent)
+            var isDir: ObjCBool = false
+            fm.fileExists(atPath: entry.path, isDirectory: &isDir)
+            if isDir.boolValue {
+                try? fm.createDirectory(at: target, withIntermediateDirectories: true)
+                seedFiles(from: entry, to: target, force: force)
+            } else {
+                if fm.fileExists(atPath: target.path) && !force { continue }
+                try? fm.copyItem(at: entry, to: target)
+            }
+        }
     }
 
     /// Public — used by Settings → Skills "Reveal user packs folder" action.

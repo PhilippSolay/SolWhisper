@@ -30,14 +30,21 @@ class OverlayWindowController: NSObject {
     private let pillHeight: CGFloat = RecordingOverlayView.pillHeight   // 48
     private let hoverWidth: CGFloat = RecordingOverlayView.hoverWidth   // 200
 
+    /// When false, the live transcript bubble below the pill is suppressed.
+    /// Meeting recordings turn this off — meetings don't drive live partials,
+    /// and any stale text from a prior dictation would flash up otherwise.
+    private let showsLiveTranscript: Bool
+
     init(transcriptionController: TranscriptionController,
          onStop:   @escaping () -> Void,
          onCancel: @escaping () -> Void,
-         onPause:  @escaping () -> Void) {
+         onPause:  @escaping () -> Void,
+         showsLiveTranscript: Bool = true) {
         self.transcriptionController = transcriptionController
         self.onStop   = onStop
         self.onCancel = onCancel
         self.onPause  = onPause
+        self.showsLiveTranscript = showsLiveTranscript
         super.init()
 
         phaseState.onAccept = { [weak self] in self?.onStop() }
@@ -291,6 +298,7 @@ class OverlayWindowController: NSObject {
     private func updateTranscriptBubble(text: String, phase: OverlayPhaseState.Phase) {
         let enabled = UserDefaults.standard.bool(forKey: "showLiveTranscript")
         let shouldShow = enabled
+            && showsLiveTranscript
             && !text.isEmpty
             && (phase == .listening || phase == .paused)
 

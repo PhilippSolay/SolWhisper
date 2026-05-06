@@ -313,11 +313,14 @@ final class WhisperKitClient {
     /// (`<|startoftranscript|>`, `<|0.00|>` timestamp markers, `<|en|>`, etc.). The
     /// parent `TranscriptionResult.text` already strips these for the joined output,
     /// but per-segment text leaks them. Clean before surfacing to the rest of the app.
-    private static let specialTokenRegex = try! NSRegularExpression(
+    /// Defensive `try?` — pattern is hardcoded and known-good, but a regex
+    /// engine quirk shouldn't crash the whole app.
+    private static let specialTokenRegex: NSRegularExpression? = try? NSRegularExpression(
         pattern: "<\\|[^|]*\\|>", options: []
     )
 
     static func stripSpecialTokens(_ raw: String) -> String {
+        guard let specialTokenRegex else { return raw }
         let range = NSRange(raw.startIndex..., in: raw)
         let cleaned = specialTokenRegex.stringByReplacingMatches(
             in: raw, options: [], range: range, withTemplate: ""

@@ -186,9 +186,12 @@ final class MeetingStore: ObservableObject {
         guard let data = line.data(using: .utf8) else { return }
         if FileManager.default.fileExists(atPath: url.path) {
             if let handle = try? FileHandle(forWritingTo: url) {
+                // Guarantee close even if seek/write throws — otherwise
+                // the FileHandle leaks until the next GC pass and could
+                // hold an exclusive write lock on the log file.
+                defer { try? handle.close() }
                 _ = try? handle.seekToEnd()
                 try? handle.write(contentsOf: data)
-                try? handle.close()
             }
         } else {
             try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),

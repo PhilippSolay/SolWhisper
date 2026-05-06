@@ -1,3 +1,4 @@
+import EventKit
 import SwiftUI
 
 /// Right pane: header card + audio scrubber + transcript scroll.
@@ -17,9 +18,27 @@ struct MeetingDetailView: View {
     @State private var summaryError: String?
     @State private var cleaning: Bool = false
     @State private var cleanError: String?
+    @State private var cleanReport: CleanupPass.Report?
     @State private var retranscribing: Bool = false
     @State private var retranscribeError: String?
     @State private var retranscribeProgress: Double?
+    @State private var diarizing: Bool = false
+    @State private var diarizeError: String?
+    @State private var diarizeProgress: Double?
+    @State private var suggesting: Bool = false
+    @State private var suggestError: String?
+    @State private var suggestSheet: [SpeakerNameSuggester.Suggestion]?
+    @StateObject private var calendar = CalendarIntegration.shared
+    @StateObject private var voiceProfiles = VoiceProfileStore.shared
+    @State private var calendarCandidates: [String] = []
+    @State private var calendarMatchSheet: CalendarMatchPayload?
+    /// Cached candidate-name pool. Rebuilt only when the source pieces
+    /// change (calendar candidates / meeting / voice profiles), not on
+    /// every body re-render.
+    @State private var cachedNameCandidates: [String] = []
+    /// Cached visible-segment list. Rebuilt when the transcript changes,
+    /// not on every body re-render.
+    @State private var cachedVisibleSegments: [TranscriptSegment] = []
     @State private var titleDraft: String = ""
     @State private var titleEditing: Bool = false
     @State private var contextDraft: String = ""
@@ -37,42 +56,65 @@ struct MeetingDetailView: View {
     @StateObject private var skillsRegistry = SkillsRegistry.shared
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                actionRow
-                if playback.controller != nil {
-                    audioBar
-                }
-                titleAndMeta
-                contextField
-                if let err = retranscribeError {
-                    Text(err).font(.system(size: 12)).foregroundColor(.red)
-                }
-                if let err = cleanError {
-                    Text(err).font(.system(size: 12)).foregroundColor(.red)
-                }
-                if let err = summaryError, summary == nil {
-                    Text(err).font(.system(size: 12)).foregroundColor(.red)
-                }
-                bodyTabBar
-                Group {
-                    switch bodyTab {
-                    case .transcript:
-                        transcriptSection
-                    case .summary:
-                        if let summary {
-                            summarySection(summary)
-                        } else {
-                            emptySummaryState
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    actionRow
+                    titleAndMeta
+                    calendarEventBox
+                    contextField
+                    if let err = retranscribeError {
+                        Text(err).font(.system(size: 12)).foregroundColor(.red)
+                    }
+                    if let err = cleanError {
+                        Text(err).font(.system(size: 12)).foregroundColor(.red)
+                    }
+                    if let err = diarizeError {
+                        Text(err).font(.system(size: 12)).foregroundColor(.red)
+                    }
+                    if let err = suggestError {
+                        Text(err).font(.system(size: 12)).foregroundColor(.red)
+                    }
+                    if let err = summaryError, summary == nil {
+                        Text(err).font(.system(size: 12)).foregroundColor(.red)
+                    }
+                    bodyTabBar
+                    Group {
+                        switch bodyTab {
+                        case .transcript:
+                            transcriptSection
+                        case .summary:
+                            if let summary {
+                                summarySection(summary)
+                            } else {
+                                emptySummaryState
+                            }
                         }
                     }
                 }
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(24)
-            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Sticky audio player — always visible, even while scrolling
+            // through long transcripts. Pinned to the bottom edge of the
+            // detail pane with a hairline divider + subtle backdrop.
+            if playback.controller != nil {
+                Divider()
+                audioBar
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.bar)
+            }
         }
         .onAppear { reloadAll() }
         .onChange(of: meeting.id) { _ in reloadAll() }
+        // Keep caches in sync with the underlying data without redoing
+        // the work on every keystroke.
+        .onChange(of: transcript?.segments.count ?? -1) { _ in rebuildVisibleSegments() }
+        .onChange(of: calendarCandidates) { _ in rebuildNameCandidates() }
+        .onChange(of: voiceProfiles.profiles.count) { _ in rebuildNameCandidates() }
+        .onChange(of: meeting.participants) { _ in rebuildNameCandidates() }
         .alert("Delete this meeting?", isPresented: $showDeleteConfirm) {
             Button("Cancel", role: .cancel) { }
             Button("Move to Trash", role: .destructive) {
@@ -81,6 +123,54 @@ struct MeetingDetailView: View {
         } message: {
             Text("\"\(meeting.title)\" will be moved to the Trash. Audio files, transcripts, and the summary go with it.")
         }
+        .sheet(item: Binding(
+            get: { suggestSheet.map { SuggestPayload(items: $0) } },
+            set: { newValue in
+                if newValue == nil { suggestSheet = nil }
+            }
+        )) { payload in
+            SuggestNamesSheet(
+                initialSuggestions: payload.items,
+                calendarCandidates: calendarCandidates,
+                onApply: { map in
+                    applySuggestedNames(map)
+                    suggestSheet = nil
+                },
+                onCancel: { suggestSheet = nil }
+            )
+        }
+        .sheet(item: Binding(
+            get: { cleanReport.map { CleanReportPayload(report: $0) } },
+            set: { newValue in if newValue == nil { cleanReport = nil } }
+        )) { payload in
+            CleanReportSheet(report: payload.report) { cleanReport = nil }
+        }
+        .sheet(item: $calendarMatchSheet) { payload in
+            CalendarMatchSheet(
+                candidates: payload.candidates,
+                bestMatch: payload.bestMatch,
+                attendeeNames: { calendar.attendeeNames(for: $0) },
+                onConfirm: { title, attendees, eventID in
+                    confirmCalendarLink(title: title, attendees: attendees, eventID: eventID)
+                    calendarMatchSheet = nil
+                },
+                onSkip: { calendarMatchSheet = nil },
+                onCancel: { calendarMatchSheet = nil }
+            )
+        }
+    }
+
+    /// Trivial Identifiable wrapper so we can drive `.sheet(item:)` off
+    /// the optional suggestion array.
+    private struct SuggestPayload: Identifiable {
+        let id = UUID()
+        let items: [SpeakerNameSuggester.Suggestion]
+    }
+
+    /// Same wrapper pattern for the clean report sheet.
+    private struct CleanReportPayload: Identifiable {
+        let id = UUID()
+        let report: CleanupPass.Report
     }
 
     private func reloadAll() {
@@ -91,6 +181,9 @@ struct MeetingDetailView: View {
         contextDraft = meeting.context ?? ""
         contextChanged = false
         bodyTab = .transcript
+        refreshCalendarCandidates()
+        rebuildVisibleSegments()
+        rebuildNameCandidates()
     }
 
     private func summarySection(_ summary: Summary) -> some View {
@@ -153,6 +246,30 @@ struct MeetingDetailView: View {
             }
             .disabled(cleaning || summarizing || retranscribing || (transcript?.segments.isEmpty ?? true))
             .help("Remove filler words, fix punctuation, tighten grammar — preserves every substantive word.")
+
+            Button {
+                runDiarize()
+            } label: {
+                if diarizing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label("Diarize", systemImage: "person.2.wave.2")
+                }
+            }
+            .disabled(diarizing || cleaning || summarizing || retranscribing || (transcript?.segments.isEmpty ?? true))
+            .help("Tag each segment with a speaker letter (A, B, C…) using the engine picked in Settings → Models → Diarization.")
+
+            Button {
+                runSuggestNames()
+            } label: {
+                if suggesting {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label("Suggest names", systemImage: "person.text.rectangle")
+                }
+            }
+            .disabled(suggesting || diarizing || (transcript?.segments.contains(where: { $0.speakerID != nil }) != true))
+            .help("Ask the LLM to propose Speaker A→Pierre, B→Ricardo… mappings using the meeting context, calendar attendees, and voice profile names.")
 
             Button {
                 showSkillPicker = true
@@ -229,6 +346,141 @@ struct MeetingDetailView: View {
             .font(.system(size: 12))
             .foregroundColor(.secondary)
         }
+    }
+
+    /// Calendar-event card. Shows three states:
+    ///   1. Linked → event title + attendee list + Change/Unlink actions
+    ///   2. Calendar permission granted but unlinked → "Link calendar event" button
+    ///   3. Permission missing → "Grant Calendar access in Settings → People"
+    @ViewBuilder
+    private var calendarEventBox: some View {
+        if let title = meeting.calendarEventTitle {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "calendar")
+                        .foregroundColor(.accentColor)
+                        .font(.system(size: 12))
+                    Text(title)
+                        .font(.system(size: 13, weight: .medium))
+                    Spacer()
+                    Button {
+                        runOpenCalendarMatch()
+                    } label: {
+                        Text("Change")
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.borderless)
+                    Button {
+                        unlinkCalendarEvent()
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                            .foregroundColor(.secondary)
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Unlink this event from the meeting")
+                }
+                if !meeting.participants.isEmpty {
+                    Text("Attendees")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.secondary)
+                    Text(meeting.participants.joined(separator: ", "))
+                        .font(.system(size: 12))
+                        .foregroundColor(.primary.opacity(0.85))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                } else {
+                    Text("No attendees on this event")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .italic()
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.secondary.opacity(0.30), lineWidth: 1)
+            )
+        } else {
+            HStack {
+                Image(systemName: "calendar")
+                    .foregroundColor(.secondary)
+                    .font(.system(size: 12))
+                Text("No calendar event linked")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Button {
+                    runOpenCalendarMatch()
+                } label: {
+                    Label("Link calendar event…", systemImage: "calendar.badge.plus")
+                        .font(.system(size: 12))
+                }
+                .controlSize(.small)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.secondary.opacity(0.20), lineWidth: 1)
+            )
+        }
+    }
+
+    /// Identifiable wrapper so we can drive `.sheet(item:)` off optional state.
+    fileprivate struct CalendarMatchPayload: Identifiable {
+        let id = UUID()
+        let candidates: [EKEvent]
+        let bestMatch: EKEvent?
+    }
+
+    private func runOpenCalendarMatch() {
+        Task { @MainActor in
+            // Check / request permission first.
+            let granted = await calendar.requestAccessIfNeeded()
+            if !granted {
+                DebugLog.shared.log(icon: "📅", label: "Calendar access denied",
+                                    value: "User declined or System Settings blocks access",
+                                    ok: false)
+                return
+            }
+            let candidates = calendar.eventsAroundMeeting(meeting)
+            calendarMatchSheet = CalendarMatchPayload(
+                candidates: candidates,
+                bestMatch: calendar.bestMatch(for: meeting)
+            )
+        }
+    }
+
+    private func confirmCalendarLink(title: String, attendees: [String], eventID: String) {
+        var updated = meeting
+        updated.calendarEventTitle = title
+        updated.calendarEventID = eventID
+        // Merge attendees into participants — don't overwrite if user has
+        // already typed names by hand. Dedupe case-insensitive.
+        var existing = Set(updated.participants.map { $0.lowercased() })
+        for name in attendees where !existing.contains(name.lowercased()) {
+            updated.participants.append(name)
+            existing.insert(name.lowercased())
+        }
+        updated.updatedAt = Date()
+        try? store.update(updated)
+        DebugLog.shared.log(icon: "📅", label: "Calendar event linked",
+                            value: "\(title) · \(attendees.count) attendees")
+        // Refresh local candidate cache so the suggester + rename popover
+        // see the new attendees immediately.
+        refreshCalendarCandidates()
+    }
+
+    private func unlinkCalendarEvent() {
+        var updated = meeting
+        updated.calendarEventTitle = nil
+        updated.calendarEventID = nil
+        updated.updatedAt = Date()
+        try? store.update(updated)
+        DebugLog.shared.log(icon: "📅", label: "Calendar event unlinked",
+                            value: meeting.calendarEventTitle ?? "?")
     }
 
     private var contextField: some View {
@@ -336,6 +588,234 @@ struct MeetingDetailView: View {
     }
 
     // MARK: - Re-transcribe
+
+    /// Loads calendar attendees for this meeting (best-match event by
+    /// time overlap). Used as a candidate pool for the LLM suggester +
+    /// the rename popover's autocomplete dropdown.
+    private func refreshCalendarCandidates() {
+        Task { @MainActor in
+            // Only proceed if access is already granted; we don't prompt
+            // here — the user grants from Settings → People.
+            let granted: Bool
+            if #available(macOS 14.0, *) {
+                granted = calendar.authStatus == .fullAccess
+            } else {
+                granted = calendar.authStatus == .authorized
+            }
+            guard granted else {
+                calendarCandidates = []
+                return
+            }
+            if let event = calendar.bestMatch(for: meeting) {
+                calendarCandidates = calendar.attendeeNames(for: event)
+                DebugLog.shared.log(icon: "📅", label: "Calendar match",
+                                    value: "\(event.title ?? "?") · \(calendarCandidates.count) attendees")
+            } else {
+                calendarCandidates = []
+            }
+        }
+    }
+
+    private func runSuggestNames() {
+        suggesting = true
+        suggestError = nil
+        Task { @MainActor in
+            defer { suggesting = false }
+            guard let document = transcript else {
+                suggestError = "No transcript loaded yet."
+                return
+            }
+            // Build the candidate pool: meeting.participants ∪
+            // calendar attendees ∪ saved voice profile names.
+            var pool = Set<String>(meeting.participants)
+            pool.formUnion(calendarCandidates)
+            pool.formUnion(voiceProfiles.allNames)
+            let candidates = Array(pool).sorted()
+            do {
+                let suggestions = try await SpeakerNameSuggester.suggest(
+                    transcript: document,
+                    meeting: meeting,
+                    candidates: candidates
+                )
+                suggestSheet = suggestions
+            } catch let err as SpeakerNameSuggester.SuggesterError {
+                suggestError = err.localizedDescription
+            } catch {
+                suggestError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Apply a batch of mappings from the suggest sheet.
+    private func applySuggestedNames(_ map: [String: String]) {
+        var updated = meeting
+        var names = updated.speakerNames ?? [:]
+        for (letter, name) in map {
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { names[letter] = trimmed }
+        }
+        updated.speakerNames = names.isEmpty ? nil : names
+        updated.updatedAt = Date()
+        try? store.update(updated)
+        DebugLog.shared.log(icon: "👥", label: "Speaker names applied",
+                            value: "\(map.count) mappings")
+    }
+
+    /// Rebuilds the candidate-name pool from sources (participants +
+    /// calendar attendees + voice profiles). Deduped and sorted. Called
+    /// only when source data changes, not on every body re-render.
+    private func rebuildNameCandidates() {
+        var pool = Set<String>(meeting.participants)
+        pool.formUnion(calendarCandidates)
+        pool.formUnion(voiceProfiles.allNames)
+        cachedNameCandidates = Array(pool).sorted()
+    }
+
+    /// Rebuilds the visible-segment list from the current transcript.
+    /// Filters out segments cleanup blanked out (cleanedText == "").
+    private func rebuildVisibleSegments() {
+        guard let transcript = transcript else {
+            cachedVisibleSegments = []
+            return
+        }
+        cachedVisibleSegments = transcript.segments.filter { seg in
+            if let cleaned = seg.cleanedText {
+                return !cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            return true
+        }
+    }
+
+    private func saveAsVoiceProfile(letter: String, name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        // Dedupe by name (case-insensitive). If a profile with this name
+        // already exists, reuse it — but still run the embedding capture
+        // below so name-only profiles get upgraded to voiceprint-stored.
+        let existing = voiceProfiles.profiles.first(where: {
+            $0.name.caseInsensitiveCompare(trimmed) == .orderedSame
+        })
+
+        let profile: VoiceProfile
+        if let existing {
+            profile = existing
+            DebugLog.shared.log(icon: "👥", label: "Voice profile reused",
+                                value: "\(trimmed) (Speaker \(letter))")
+        } else {
+            profile = VoiceProfile(
+                name: trimmed,
+                sourceMeetingID: meeting.id,
+                sourceSpeakerLetter: letter
+            )
+            voiceProfiles.add(profile)
+            DebugLog.shared.log(icon: "👥", label: "Voice profile saved",
+                                value: "\(trimmed) (Speaker \(letter))")
+        }
+
+        // Capture a voiceprint unless this profile already has one — every
+        // saved speaker should end up with an embedding so future meetings
+        // auto-match them. Skip if the profile is already voiceprint-stored
+        // to avoid redundant work.
+        if profile.hasEmbedding {
+            DebugLog.shared.log(icon: "👥", label: "Voiceprint already stored",
+                                value: trimmed)
+            return
+        }
+        if #available(macOS 14.0, *) {
+            captureEmbedding(for: profile, letter: letter)
+        }
+    }
+
+    @available(macOS 14.0, *)
+    private func captureEmbedding(for profile: VoiceProfile, letter: String) {
+        guard let document = transcript else { return }
+        let folder = store.folderURL(for: meeting)
+        let candidates = (try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: nil)) ?? []
+        guard let audioURL = candidates.first(where: {
+            $0.lastPathComponent.hasPrefix("audio.")
+        }) else {
+            DebugLog.shared.log(icon: "👥", label: "Voiceprint skipped",
+                                value: "no audio file in meeting folder",
+                                ok: false)
+            return
+        }
+        Task { @MainActor in
+            do {
+                try await VoiceProfileEmbedder.capture(
+                    profile: profile,
+                    speakerLetter: letter,
+                    in: document,
+                    audioURL: audioURL,
+                    store: voiceProfiles
+                )
+            } catch let err as VoiceProfileEmbedder.EmbedError {
+                DebugLog.shared.log(icon: "👥", label: "Voiceprint capture failed",
+                                    value: err.localizedDescription, ok: false)
+            } catch {
+                DebugLog.shared.log(icon: "👥", label: "Voiceprint capture failed",
+                                    value: "\(error)", ok: false)
+            }
+        }
+    }
+
+    private func renameSpeaker(letter: String, to newName: String) {
+        var updated = meeting
+        var names = updated.speakerNames ?? [:]
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            names.removeValue(forKey: letter)
+        } else {
+            names[letter] = trimmed
+        }
+        updated.speakerNames = names.isEmpty ? nil : names
+        updated.updatedAt = Date()
+        try? store.update(updated)
+    }
+
+    private func runDiarize() {
+        diarizing = true
+        diarizeError = nil
+        diarizeProgress = 0
+        Task { @MainActor in
+            defer { diarizing = false; diarizeProgress = nil }
+            guard let document = transcript else {
+                diarizeError = "No transcript loaded yet."
+                return
+            }
+            // Find the audio file in the meeting folder.
+            let folder = store.folderURL(for: meeting)
+            let candidates = (try? FileManager.default.contentsOfDirectory(
+                at: folder, includingPropertiesForKeys: nil)) ?? []
+            guard let audioURL = candidates.first(where: {
+                $0.lastPathComponent.hasPrefix("audio.")
+            }) else {
+                diarizeError = "Audio file not found in this meeting's folder."
+                return
+            }
+            let outcome = await DiarizationRunner.run(
+                meeting: meeting,
+                transcript: document,
+                audioURL: audioURL,
+                store: store,
+                progress: { f in diarizeProgress = f }
+            )
+            switch outcome {
+            case .noEngine:
+                diarizeError = "No diarization engine configured. Pick one in Settings → Models → Diarization."
+            case .failed(let msg):
+                diarizeError = msg
+            case .success(let tagged, let total, let engineID):
+                DebugLog.shared.log(icon: "🎭", label: "Diarize done",
+                                    value: "\(tagged)/\(total) segments tagged · engine=\(engineID)")
+                // Reload transcript from disk so the view picks up speakerID.
+                if let reloaded = try? store.loadTranscript(for: meeting) {
+                    transcript = reloaded
+                }
+            }
+        }
+    }
 
     private func runRetranscribe() {
         retranscribing = true
@@ -501,13 +981,13 @@ struct MeetingDetailView: View {
             }
             let pass = CleanupPass(client: resolved.client, model: resolved.modelID)
             do {
-                let cleaned = try await pass.clean(segments, forceAllRulesIfEmpty: true)
-                let updated = TranscriptDocument(meetingID: meeting.id, segments: cleaned)
+                let result = try await pass.cleanWithReport(segments, forceAllRulesIfEmpty: true)
+                let updated = TranscriptDocument(meetingID: meeting.id, segments: result.segments)
                 try store.writeTranscript(updated, for: meeting)
                 transcript = updated
-                let cleanedCount = cleaned.filter { ($0.cleanedText ?? "").isEmpty == false }.count
+                cleanReport = result.report
                 DebugLog.shared.log(icon: "🧹", label: "Manual clean done",
-                                    value: "\(cleanedCount)/\(cleaned.count) segments · \(resolved.providerLabel) · \(resolved.modelID)")
+                                    value: "modified=\(result.report.segmentsModified) artifacts=\(result.report.artifactsDropped) blanked=\(result.report.segmentsBlanked) · \(resolved.providerLabel) · \(resolved.modelID)")
             } catch let err as CleanupPass.CleanError {
                 if case .partial(_, let done, let total) = err {
                     // Partial = some segments did get cleaned. Persist what
@@ -613,13 +1093,34 @@ struct MeetingDetailView: View {
                     Text("No segments in transcript.")
                         .foregroundColor(.secondary)
                         .font(.system(size: 12))
+                } else if cachedVisibleSegments.isEmpty {
+                    Text("Cleanup removed every segment as non-speech. Re-transcribe with a higher-accuracy model (Settings → Models → STT Meetings → large-v3-turbo) for better results.")
+                        .foregroundColor(.secondary)
+                        .font(.system(size: 12))
                 } else {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(transcript.segments) { segment in
-                            TranscriptSegmentRow(segment: segment) {
-                                playback.controller?.seek(to: segment.start)
-                                playback.controller?.play()
-                            }
+                    // LazyVStack only renders rows currently in the
+                    // viewport — critical for 1h+ meetings with hundreds
+                    // of segments. Combined with the cached candidate
+                    // pool and Equatable-row trick below, this keeps
+                    // scrolling smooth.
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        ForEach(cachedVisibleSegments) { segment in
+                            TranscriptSegmentRow(
+                                segment: segment,
+                                speakerNames: meeting.speakerNames ?? [:],
+                                nameCandidates: cachedNameCandidates,
+                                onTap: {
+                                    playback.controller?.seek(to: segment.start)
+                                    playback.controller?.play()
+                                },
+                                onRenameSpeaker: { letter, newName in
+                                    renameSpeaker(letter: letter, to: newName)
+                                },
+                                onSaveAsProfile: { letter, name in
+                                    saveAsVoiceProfile(letter: letter, name: name)
+                                }
+                            )
+                            .equatable()
                         }
                     }
                 }
@@ -668,12 +1169,59 @@ struct MeetingDetailView: View {
 
 // MARK: - Transcript row
 
-private struct TranscriptSegmentRow: View {
+private struct TranscriptSegmentRow: View, Equatable {
     let segment: TranscriptSegment
+    let speakerNames: [String: String]
+    let nameCandidates: [String]
     let onTap: () -> Void
+    let onRenameSpeaker: (_ letter: String, _ newName: String) -> Void
+    let onSaveAsProfile: (_ letter: String, _ name: String) -> Void
+
+    @State private var renamePopoverShowing = false
+    @State private var renameDraft: String = ""
+
+    /// The user's own display name (e.g. "Philipp"). When a speaker badge
+    /// resolves to this name (case-insensitive), or when the segment is on
+    /// the `.me` channel, the badge renders in white instead of the
+    /// hash-assigned palette color so the user can spot themselves at a
+    /// glance. Set in Settings → People → "You".
+    @AppStorage("userDisplayName") private var userDisplayName: String = ""
+
+    /// Value-only equality: closures aren't comparable, but they don't
+    /// affect the rendered output as long as the static segment data and
+    /// speakerNames/candidates are the same. SwiftUI uses this to
+    /// short-circuit re-renders during scroll + popover state churn.
+    static func == (lhs: TranscriptSegmentRow, rhs: TranscriptSegmentRow) -> Bool {
+        lhs.segment == rhs.segment
+            && lhs.speakerNames == rhs.speakerNames
+            && lhs.nameCandidates == rhs.nameCandidates
+    }
+
+    /// True when `displayName` matches the user's configured own name.
+    /// Empty `userDisplayName` always returns false so we don't accidentally
+    /// whitewash every unconfigured row.
+    private func isMe(_ displayName: String) -> Bool {
+        let me = userDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !me.isEmpty else { return false }
+        return displayName.caseInsensitiveCompare(me) == .orderedSame
+    }
+
+    /// Cycling palette so each speaker letter (A..H) gets a distinct color.
+    /// Muted, desaturated tones designed to read calmly on a dark background
+    /// — sophisticated rather than the default saturated SwiftUI rainbow.
+    private static let speakerPalette: [Color] = [
+        Color(red: 0.46, green: 0.66, blue: 0.86), // soft slate blue
+        Color(red: 0.62, green: 0.78, blue: 0.62), // sage green
+        Color(red: 0.86, green: 0.66, blue: 0.46), // warm amber
+        Color(red: 0.74, green: 0.58, blue: 0.82), // soft lavender
+        Color(red: 0.86, green: 0.58, blue: 0.62), // dusty rose
+        Color(red: 0.46, green: 0.74, blue: 0.74), // muted teal
+        Color(red: 0.78, green: 0.62, blue: 0.50), // soft taupe
+        Color(red: 0.66, green: 0.68, blue: 0.82)  // dusty periwinkle
+    ]
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: 20) {
             Button(action: onTap) {
                 Text(formatTimestamp(segment.start))
                     .font(.system(size: 11, design: .monospaced))
@@ -683,9 +1231,11 @@ private struct TranscriptSegmentRow: View {
             .buttonStyle(.plain)
 
             speakerBadge
-                .frame(width: 50, alignment: .leading)
+                .fixedSize(horizontal: true, vertical: false)
 
-            Text(segment.text)
+            // Prefer cleanedText when the cleanup pass produced one; fall
+            // back to the raw transcript otherwise.
+            Text(displayText)
                 .font(.system(size: 13))
                 .lineSpacing(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -693,18 +1243,137 @@ private struct TranscriptSegmentRow: View {
         }
     }
 
+    private var displayText: String {
+        if let cleaned = segment.cleanedText,
+           !cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return cleaned
+        }
+        return segment.text
+    }
+
+    /// Speakers can be identified three ways:
+    /// - `speakerID` letter ("A", "B", …) from diarization
+    /// - Channel-based `.me` / `.other` from a live recording (mic vs system audio)
+    /// - `.unknown` (e.g. imported file with no diarization yet)
+    ///
+    /// All three (when present) get a click-to-rename popover. We use
+    /// pseudo-keys `__me__` / `__other__` in the `speakerNames` map so the
+    /// channel speakers can also be associated with a real person ("[Me] →
+    /// Pierre"). Diarized letters take precedence when both exist.
     @ViewBuilder
     private var speakerBadge: some View {
-        switch segment.speaker {
-        case .me:
-            Text("[Me]").font(.system(size: 11, weight: .medium))
-                .foregroundColor(.blue)
-        case .other:
-            Text("[Other]").font(.system(size: 11, weight: .medium))
-                .foregroundColor(.purple)
-        case .unknown:
-            EmptyView()
+        if let letter = segment.speakerID, !letter.isEmpty {
+            let displayName = speakerNames[letter] ?? "Speaker \(letter)"
+            let baseColor = Self.speakerPalette[abs(letter.hashValue) % Self.speakerPalette.count]
+            let color: Color = isMe(displayName) ? .white : baseColor
+            renameableBadge(letter: letter, displayName: displayName, color: color,
+                            tooltip: "Click to rename Speaker \(letter)")
+        } else {
+            switch segment.speaker {
+            case .me:
+                let displayName = speakerNames["__me__"] ?? "[Me]"
+                // The mic channel is always the user — render white regardless
+                // of whether userDisplayName is set.
+                renameableBadge(letter: "__me__", displayName: displayName,
+                                color: .white,
+                                tooltip: "Click to assign a real name to the [Me] channel (your microphone).")
+            case .other:
+                let displayName = speakerNames["__other__"] ?? "[Other]"
+                let color: Color = isMe(displayName) ? .white : Self.speakerPalette[3]
+                renameableBadge(letter: "__other__", displayName: displayName,
+                                color: color,
+                                tooltip: "Click to assign a real name to the [Other] channel (the other side's audio).")
+            case .unknown:
+                Text("—")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary.opacity(0.5))
+            }
         }
+    }
+
+    @ViewBuilder
+    private func renameableBadge(letter: String,
+                                  displayName: String,
+                                  color: Color,
+                                  tooltip: String) -> some View {
+        Button {
+            renameDraft = speakerNames[letter] ?? ""
+            renamePopoverShowing = true
+        } label: {
+            Text(displayName)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(color)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .buttonStyle(.plain)
+        .help(tooltip)
+        .popover(isPresented: $renamePopoverShowing) {
+            renamePopover(letter: letter)
+        }
+    }
+
+    private func renamePopover(letter: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(renameTitle(for: letter))
+                .font(.system(size: 12, weight: .semibold))
+            TextField("Name (e.g. Pierre)", text: $renameDraft, onCommit: {
+                onRenameSpeaker(letter, renameDraft)
+                renamePopoverShowing = false
+            })
+            .textFieldStyle(.roundedBorder)
+            .frame(width: 240)
+
+            if !nameCandidates.isEmpty {
+                Text("Suggestions")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(nameCandidates, id: \.self) { candidate in
+                            Button {
+                                renameDraft = candidate
+                            } label: {
+                                Text(candidate)
+                                    .font(.system(size: 12))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 3)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .background(
+                                renameDraft == candidate
+                                ? Color.accentColor.opacity(0.15)
+                                : Color.clear
+                            )
+                            .cornerRadius(4)
+                        }
+                    }
+                }
+                .frame(maxHeight: 100)
+            }
+
+            HStack {
+                Button("Clear") {
+                    onRenameSpeaker(letter, "")
+                    renamePopoverShowing = false
+                }
+                .controlSize(.small)
+                Spacer()
+                Button("Save") {
+                    onRenameSpeaker(letter, renameDraft)
+                    onSaveAsProfile(letter, renameDraft)
+                    renamePopoverShowing = false
+                }
+                .keyboardShortcut(.defaultAction)
+                .controlSize(.small)
+                .disabled(renameDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+                .help("Saves the name and captures a 256-dim voiceprint from this speaker's audio so future meetings auto-name them. Local + private (FluidAudio CoreML).")
+            }
+        }
+        .padding(12)
+        .frame(width: 280)
     }
 
     private func formatTimestamp(_ seconds: TimeInterval) -> String {
@@ -714,6 +1383,16 @@ private struct TranscriptSegmentRow: View {
         let s = total % 60
         if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
         return String(format: "%d:%02d", m, s)
+    }
+
+    /// Pretty title for the rename popover. Translates the channel
+    /// pseudo-keys to user-facing labels.
+    private func renameTitle(for letter: String) -> String {
+        switch letter {
+        case "__me__":    return "[Me] is…"
+        case "__other__": return "[Other] is…"
+        default:          return "Speaker \(letter) is…"
+        }
     }
 }
 

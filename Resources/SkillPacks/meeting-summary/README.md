@@ -31,10 +31,12 @@ meeting-summary/
     ├── architectural-review.md      # technical design, ADR-style decisions, tradeoffs
     ├── scrum-standup.md             # round-robin, blockers, escalations
     ├── development-session.md       # working code session, gotchas, TODOs
-    ├── exploration.md               # open-ended ideation, hypotheses, references
+    ├── exploration.md               # open-ended analytical ideation, hypotheses, references
     ├── retrospective.md             # what went well/didn't, start-stop-continue
     ├── one-on-one.md                # CAPS framework, separated commitments, privacy
-    └── user-interview.md            # JTBD, verbatim quotes, hypothesis tracking
+    ├── user-interview.md            # JTBD, verbatim quotes, hypothesis tracking
+    ├── interview-hiring.md          # candidate evaluation, competency rubric, hire/no-hire
+    └── brainstorm-creative.md       # divergent creative ideation, idea inventory, themes
 ```
 
 ## How it works
@@ -102,8 +104,6 @@ If your usage grows, these are the next types worth adding:
 - `board-meeting.md` — strategic decisions, financial implications, governance, formal resolutions
 - `client-status.md` — recurring client check-in, deliverables, scope, billing context
 - `vendor-supplier.md` — manufacturing/supplier calls (orders, lead times, quality issues, payments) — relevant for ATMOSA
-- `interview-hiring.md` — candidate evaluation, signal per competency, hire/no-hire recommendation
 - `performance-review.md` — formal evaluation, ratings, goals, development plan
-- `brainstorm-creative.md` — divergent ideation for design/creative output (different from `exploration` which is more analytical)
 - `negotiation.md` — positions, interests, BATNA, concessions made, open terms
 - `incident-postmortem.md` — incident timeline, root cause, contributing factors, action items (specialized retrospective)

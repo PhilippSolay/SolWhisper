@@ -14,6 +14,10 @@ struct TranscriptSegment: Codable, Identifiable, Equatable, Sendable {
     let confidence: Double?
     let speaker: SpeakerLabel
     var cleanedText: String?
+    /// Speaker letter ("A", "B", "C", …) populated by a diarization pass.
+    /// Independent of `speaker` (which is mic/system channel for live
+    /// recordings). When both are present, the view prefers `speakerID`.
+    var speakerID: String?
 
     init(
         id: UUID = UUID(),
@@ -22,7 +26,8 @@ struct TranscriptSegment: Codable, Identifiable, Equatable, Sendable {
         text: String,
         confidence: Double? = nil,
         speaker: SpeakerLabel = .unknown,
-        cleanedText: String? = nil
+        cleanedText: String? = nil,
+        speakerID: String? = nil
     ) {
         self.id = id
         self.start = start
@@ -31,6 +36,7 @@ struct TranscriptSegment: Codable, Identifiable, Equatable, Sendable {
         self.confidence = confidence
         self.speaker = speaker
         self.cleanedText = cleanedText
+        self.speakerID = speakerID
     }
 }
 

@@ -63,12 +63,23 @@ enum LLMResolver {
             return Resolved(client: AnthropicClient(),
                             modelID: model.modelID,
                             providerLabel: "anthropic")
-        case .openai, .google, .groq, .custom:
-            // No direct client yet — silently fail back to OpenRouter if a
-            // key is configured. Logged so the user sees why their pick
-            // didn't apply.
+        case .openai:
+            return Resolved(client: OpenAIClient(),
+                            modelID: model.modelID,
+                            providerLabel: "openai")
+        case .groq:
+            return Resolved(client: GroqClient(),
+                            modelID: model.modelID,
+                            providerLabel: "groq")
+        case .google:
+            return Resolved(client: GoogleClient(),
+                            modelID: model.modelID,
+                            providerLabel: "google")
+        case .custom:
+            // Custom-provider direct support is a v0.6 item — needs URL,
+            // headers, and body shape configured per model.
             DebugLog.shared.log(icon: "🛣️", label: "Routing fallback",
-                                value: "No direct \(model.provider.label) client; falling back to OpenRouter",
+                                value: "Custom-provider direct calls not yet supported (\(model.provider.label))",
                                 ok: false)
             _ = role
             return nil

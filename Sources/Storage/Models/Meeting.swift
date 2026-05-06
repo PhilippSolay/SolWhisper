@@ -23,6 +23,18 @@ struct Meeting: Codable, Identifiable, Equatable, Sendable {
     /// the summary prompt as "Background you should know about this meeting".
     /// Optional for backwards compat with pre-alpha.4 meetings.
     var context: String?
+    /// Maps speaker letter ("A", "B", …) → real name. Populated by the
+    /// transcript view's "rename speaker" popover after a diarization pass.
+    var speakerNames: [String: String]?
+    /// Audit field — which engine produced the speaker labels currently on
+    /// the transcript ("assemblyai" / "deepgram" / "fluidaudio" / nil).
+    var diarizationEngine: String?
+    /// Title of the macOS Calendar event this meeting was linked to (via
+    /// the "Link calendar" affordance). Nil = unlinked.
+    var calendarEventTitle: String?
+    /// `EKEvent.eventIdentifier` of the linked event so we can re-resolve
+    /// the canonical attendee list later if needed.
+    var calendarEventID: String?
 
     init(
         id: UUID = UUID(),
@@ -38,7 +50,11 @@ struct Meeting: Codable, Identifiable, Equatable, Sendable {
         summarySkillId: String? = nil,
         summaryLLMProvider: String? = nil,
         folderName: String,
-        context: String? = nil
+        context: String? = nil,
+        speakerNames: [String: String]? = nil,
+        diarizationEngine: String? = nil,
+        calendarEventTitle: String? = nil,
+        calendarEventID: String? = nil
     ) {
         self.id = id
         self.schemaVersion = schemaVersion
@@ -54,5 +70,9 @@ struct Meeting: Codable, Identifiable, Equatable, Sendable {
         self.summaryLLMProvider = summaryLLMProvider
         self.folderName = folderName
         self.context = context
+        self.speakerNames = speakerNames
+        self.diarizationEngine = diarizationEngine
+        self.calendarEventTitle = calendarEventTitle
+        self.calendarEventID = calendarEventID
     }
 }

@@ -136,6 +136,32 @@ final class FileImportController {
             store.appendSessionLog(meeting,
                                    "Import complete — \(result.document.segments.count) segments, \(Int(duration))s audio")
 
+            // 6b. Optional auto-diarization for imports. Same toggle as
+            // live recordings — `meetingsAutoDiarize` + a configured engine.
+            let autoDiarize = UserDefaults.standard.bool(forKey: "meetingsAutoDiarize")
+            let engineConfigured = !(UserDefaults.standard.string(forKey: "diarizationEngine") ?? "").isEmpty
+            if autoDiarize, engineConfigured, !result.document.segments.isEmpty {
+                let outcome = await DiarizationRunner.run(
+                    meeting: meeting,
+                    transcript: result.document,
+                    audioURL: destAudioURL,
+                    store: store,
+                    progress: { _ in }
+                )
+                if case .success(let tagged, let total, let engineID) = outcome {
+                    DebugLog.shared.log(icon: "🎭", label: "Import auto-diarize done",
+                                        value: "\(tagged)/\(total) tagged via \(engineID)")
+                    // Re-render markdown with speaker labels visible.
+                    if let reloaded = try? store.loadTranscript(for: meeting) {
+                        let md = FileTranscriber.renderMarkdown(reloaded, title: meeting.title)
+                        try? store.writeTranscriptMarkdown(md, for: meeting)
+                    }
+                } else if case .failed(let msg) = outcome {
+                    DebugLog.shared.log(icon: "🎭", label: "Import auto-diarize failed",
+                                        value: msg, ok: false)
+                }
+            }
+
             // 7. Done
             inFlightMeeting = nil
             let folder = store.folderURL(for: meeting)

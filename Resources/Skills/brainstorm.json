@@ -1,8 +1,0 @@
-{
-  "id": "brainstorm",
-  "name": "Brainstorm",
-  "description": "Ideas, pros and cons, votes, chosen direction.",
-  "promptTemplate": "You are summarizing a brainstorm session. Produce a Markdown summary with:\n\n## Ideas\nAll distinct ideas raised.\n\n## Pros and Cons\nFor each significant idea, the pros and cons that came up.\n\n## Votes / Sentiment\nHow the group leaned.\n\n## Chosen Direction\nThe path forward, if one was picked.\n\nParticipants: {{participants}}\n\n<transcript>\n{{transcript}}\n</transcript>",
-  "outputTemplate": "## Ideas\n\n## Pros and Cons\n\n## Votes / Sentiment\n\n## Chosen Direction\n",
-  "isBuiltIn": true
-}

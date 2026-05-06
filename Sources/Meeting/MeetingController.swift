@@ -162,12 +162,20 @@ final class MeetingController: ObservableObject {
             guard let self else { return }
             if resolvedMicFormat == nil {
                 resolvedMicFormat = buffer.format
+                guard let systemFormat = AVAudioFormat(
+                    commonFormat: .pcmFormatFloat32,
+                    sampleRate: SystemAudioCapture.sampleRate,
+                    channels: SystemAudioCapture.channelCount,
+                    interleaved: false
+                ) else {
+                    DebugLog.shared.log(icon: "🎬", label: "Bootstrap failed",
+                                        value: "couldn't construct system AVAudioFormat",
+                                        ok: false)
+                    return
+                }
                 self.bootstrapWriter(meeting: meeting,
                                      micFormat: buffer.format,
-                                     systemFormat: AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                                                  sampleRate: SystemAudioCapture.sampleRate,
-                                                                  channels: SystemAudioCapture.channelCount,
-                                                                  interleaved: false)!,
+                                     systemFormat: systemFormat,
                                      pendingMic: &pendingMic,
                                      pendingSystem: &pendingSystem)
             }
@@ -424,6 +432,37 @@ final class MeetingController: ObservableObject {
         var updated = meeting
         updated.durationSeconds = audioDurationSeconds(micOutURL) ?? 0
         try? store.update(updated)
+
+        // Optional auto-diarization. Runs on the COMBINED audio (mixed
+        // mic+system stream) so we get speaker letters that include both
+        // sides of the call. Replaces the channel-based [Me]/[Other] tags
+        // visually but keeps them in the model for back-compat.
+        let autoDiarize = UserDefaults.standard.bool(forKey: "meetingsAutoDiarize")
+        let engineConfigured = !(UserDefaults.standard.string(forKey: "diarizationEngine") ?? "").isEmpty
+        if autoDiarize, engineConfigured, !allSegments.isEmpty {
+            let combinedURL = store.audioURL(for: meeting, ext: "wav")
+            let docCopy = TranscriptDocument(meetingID: meeting.id, segments: allSegments)
+            let outcome = await DiarizationRunner.run(
+                meeting: updated,
+                transcript: docCopy,
+                audioURL: combinedURL,
+                store: store,
+                progress: { _ in }
+            )
+            if case .success(let tagged, let total, let engineID) = outcome {
+                DebugLog.shared.log(icon: "🎭", label: "Auto-diarize done",
+                                    value: "\(tagged)/\(total) tagged via \(engineID)")
+                // Reload from disk to get the persisted speakerID assignments.
+                if let reloaded = try? store.loadTranscript(for: updated) {
+                    allSegments = reloaded.segments
+                    let md = renderMarkdown(reloaded, title: updated.title)
+                    try? store.writeTranscriptMarkdown(md, for: updated)
+                }
+            } else if case .failed(let msg) = outcome {
+                DebugLog.shared.log(icon: "🎭", label: "Auto-diarize failed",
+                                    value: msg, ok: false)
+            }
+        }
 
         // Sprint 5 — optional auto-summarize. Off by default — the user can
         // also trigger summarize from the Transcripts UI later (Sprint 5 polish).

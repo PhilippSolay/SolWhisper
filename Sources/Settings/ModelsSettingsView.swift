@@ -17,9 +17,16 @@ struct ModelsSettingsView: View {
     @AppStorage("cleanupLLMProvider")     private var cleanupProvider    = "openrouter"
     @AppStorage("summaryLLMProvider")     private var summaryProvider    = "openrouter"
 
+    // Diarization — engine choice + cloud API key (Deepgram reuses the
+    // existing STT key; AssemblyAI gets its own Keychain entry).
+    @AppStorage("diarizationEngine") private var diarizationEngine = ""
+    @State private var assemblyAIApiKey: String = ""
+    @State private var assemblyAIVisible: Bool = false
+
     @StateObject private var modelStore = ModelStore.shared
     @State private var deepgramVisible = false
     @State private var showAddSheet = false
+    @State private var editingModel: ConfiguredModel?
 
     var body: some View {
         Form {
@@ -57,6 +64,44 @@ struct ModelsSettingsView: View {
                     .font(.caption).foregroundColor(.secondary)
             }
 
+            Section {
+                Picker("Engine", selection: $diarizationEngine) {
+                    Text("Off").tag("")
+                    ForEach(DiarizationResolver.allProviders, id: \.id) { p in
+                        Text(p.label).tag(p.id)
+                    }
+                }
+                if diarizationEngine == "assemblyai" {
+                    APIKeyField(label: "AssemblyAI API Key",
+                                text: $assemblyAIApiKey,
+                                visible: $assemblyAIVisible)
+                        .onChange(of: assemblyAIApiKey) { newValue in
+                            try? KeychainStore.set(newValue,
+                                forKey: AssemblyAIDiarizer.apiKeyKeychainKey)
+                        }
+                    Link("Get an AssemblyAI key →",
+                         destination: URL(string: "https://www.assemblyai.com/dashboard/signup")!)
+                        .font(.system(size: 11))
+                }
+                if diarizationEngine == "deepgram" {
+                    APIKeyField(label: "Deepgram API Key",
+                                text: $deepgramApiKey,
+                                visible: $deepgramVisible)
+                    Text("Reuses the same key as STT Short → Deepgram if you have one set.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                if diarizationEngine == "fluidaudio" {
+                    Text("Local diarization (FluidAudio CoreML) ships in v0.6 — Swift package integration pending. Pick AssemblyAI or Deepgram for now.")
+                        .font(.caption).foregroundColor(.orange)
+                }
+            } header: { Text("Diarization — speaker labeling") } footer: {
+                Text("Adds [Speaker A] / [Speaker B] labels to transcript segments. Cloud engines send the audio file to the provider; FluidAudio runs fully on-device (v0.6). Off = no speaker labels (live recordings still use channel-based [Me]/[Other]).")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            .onAppear {
+                assemblyAIApiKey = (try? KeychainStore.string(forKey: AssemblyAIDiarizer.apiKeyKeychainKey)) ?? ""
+            }
+
             // LLM routing — picks WHICH configured model handles each role.
             // Listed before "Configured models" so the user immediately sees
             // what's actually being used.
@@ -84,6 +129,7 @@ struct ModelsSettingsView: View {
                     ForEach(modelStore.models) { m in
                         ConfiguredModelRow(
                             model: m,
+                            onEdit: { editingModel = m },
                             onDelete: { modelStore.delete(m) }
                         )
                     }
@@ -101,13 +147,30 @@ struct ModelsSettingsView: View {
         .formStyle(.grouped)
         .navigationTitle("Models")
         .sheet(isPresented: $showAddSheet) {
-            AddModelSheet(onSave: { newModel, apiKey in
-                if !apiKey.isEmpty {
-                    try? KeychainStore.set(apiKey, forKey: newModel.provider.apiKeyKeychainKey)
-                }
-                modelStore.add(newModel)
-                showAddSheet = false
-            }, onCancel: { showAddSheet = false })
+            AddModelSheet(editing: nil,
+                          onSave: { newModel, apiKey in
+                              if !apiKey.isEmpty {
+                                  try? KeychainStore.set(apiKey, forKey: newModel.provider.apiKeyKeychainKey)
+                              }
+                              modelStore.add(newModel)
+                              showAddSheet = false
+                          },
+                          onCancel: { showAddSheet = false })
+        }
+        .sheet(item: $editingModel) { m in
+            AddModelSheet(editing: m,
+                          onSave: { updated, apiKey in
+                              // Provider key is shared, so writing the same
+                              // key back is a no-op when unchanged. Empty
+                              // skips the write so existing keys aren't
+                              // wiped if the user blanked the field.
+                              if !apiKey.isEmpty {
+                                  try? KeychainStore.set(apiKey, forKey: updated.provider.apiKeyKeychainKey)
+                              }
+                              modelStore.update(updated)
+                              editingModel = nil
+                          },
+                          onCancel: { editingModel = nil })
         }
     }
 
@@ -143,6 +206,7 @@ struct ModelsSettingsView: View {
 
 private struct ConfiguredModelRow: View {
     let model: ConfiguredModel
+    let onEdit: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
@@ -165,6 +229,13 @@ private struct ConfiguredModelRow: View {
                 .font(.system(size: 12))
                 .foregroundColor(.secondary)
 
+            Button(action: onEdit) {
+                Image(systemName: "pencil")
+                    .font(.system(size: 12))
+            }
+            .buttonStyle(.plain)
+            .help("Edit model + API key")
+
             Button(role: .destructive, action: onDelete) {
                 Image(systemName: "trash")
                     .font(.system(size: 12))
@@ -179,21 +250,46 @@ private struct ConfiguredModelRow: View {
 // MARK: - Add Model sheet
 
 private struct AddModelSheet: View {
+    /// Pre-filled when editing an existing model; nil when adding a new one.
+    let editing: ConfiguredModel?
+    /// Returns `(updated/new model, api-key-to-store)`. When editing, the
+    /// model's `id` is preserved by the caller via the captured original.
     let onSave: (ConfiguredModel, String) -> Void
     let onCancel: () -> Void
 
-    @State private var provider: ModelProvider = .anthropic
-    @State private var modelID: String = ""
-    @State private var displayName: String = ""
-    @State private var apiKey: String = ""
-    @State private var apiKeyVisible: Bool = false
+    @State private var provider: ModelProvider
+    @State private var modelID: String
+    @State private var displayName: String
+    @State private var apiKey: String
+    @State private var apiKeyVisible: Bool
+
+    init(editing: ConfiguredModel? = nil,
+         onSave: @escaping (ConfiguredModel, String) -> Void,
+         onCancel: @escaping () -> Void) {
+        self.editing = editing
+        self.onSave = onSave
+        self.onCancel = onCancel
+        if let m = editing {
+            _provider = State(initialValue: m.provider)
+            _modelID = State(initialValue: m.modelID)
+            _displayName = State(initialValue: m.displayName)
+        } else {
+            _provider = State(initialValue: .anthropic)
+            _modelID = State(initialValue: "")
+            _displayName = State(initialValue: "")
+        }
+        _apiKey = State(initialValue: "")          // populated in onAppear
+        _apiKeyVisible = State(initialValue: false)
+    }
 
     var body: some View {
         Form {
             Section {
-                Text("Bring your own keys")
+                Text(editing == nil ? "Bring your own keys" : "Edit model")
                     .font(.system(size: 14, weight: .semibold))
-                Text("Configure a model that uses your own API key to connect directly to a provider.")
+                Text(editing == nil
+                     ? "Configure a model that uses your own API key to connect directly to a provider."
+                     : "Update the model ID, display name, or API key. Provider can't change — delete and re-add to switch providers.")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
             }
@@ -204,18 +300,28 @@ private struct AddModelSheet: View {
                         Label(p.label, systemImage: p.symbolIcon).tag(p)
                     }
                 }
+                .disabled(editing != nil)
                 .onChange(of: provider) { _ in
                     modelID = provider.presetModelIDs.first ?? ""
                 }
 
                 if !provider.presetModelIDs.isEmpty {
-                    Picker("Model", selection: $modelID) {
+                    // Show "Custom…" as the selected option when the current
+                    // modelID isn't in the preset list (e.g. an older entry).
+                    let isCustom = !provider.presetModelIDs.contains(modelID)
+                    Picker("Model", selection: Binding(
+                        get: { isCustom ? "custom" : modelID },
+                        set: { if $0 != "custom" { modelID = $0 } }
+                    )) {
                         ForEach(provider.presetModelIDs, id: \.self) { Text($0).tag($0) }
                         Divider()
                         Text("Custom…").tag("custom")
                     }
-                }
-                if provider.presetModelIDs.isEmpty || modelID == "custom" {
+                    if isCustom {
+                        TextField("Model ID", text: $modelID)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                } else {
                     TextField("Model ID", text: $modelID)
                         .textFieldStyle(.roundedBorder)
                 }
@@ -244,7 +350,7 @@ private struct AddModelSheet: View {
                 Button("Cancel") { onCancel() }
             }
             ToolbarItem(placement: .confirmationAction) {
-                Button("Add") { commit() }
+                Button(editing == nil ? "Add" : "Save") { commit() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(canCommit == false)
             }
@@ -253,7 +359,9 @@ private struct AddModelSheet: View {
             if modelID.isEmpty {
                 modelID = provider.presetModelIDs.first ?? ""
             }
-            // Pre-fill API key if we already have one for this provider.
+            // Pre-fill API key from Keychain. Provider keys are shared across
+            // models from the same provider, so when editing we still surface
+            // whatever's currently stored.
             apiKey = (try? KeychainStore.string(forKey: provider.apiKeyKeychainKey)) ?? ""
         }
         .onChange(of: provider) { _ in
@@ -271,10 +379,15 @@ private struct AddModelSheet: View {
     }
 
     private func commit() {
+        // When editing, preserve the original UUID so any routing pickers
+        // pinned to this model keep working.
+        let id = editing?.id ?? UUID()
         let model = ConfiguredModel(
+            id: id,
             provider: provider,
             modelID: modelID.trimmingCharacters(in: .whitespaces),
-            displayName: displayName.trimmingCharacters(in: .whitespaces)
+            displayName: displayName.trimmingCharacters(in: .whitespaces),
+            isFavorite: editing?.isFavorite ?? false
         )
         onSave(model, apiKey)
     }

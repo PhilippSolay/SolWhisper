@@ -6,6 +6,8 @@ struct MeetingSettingsView: View {
     @AppStorage("meetingsAutoIntegrate")  private var autoIntegrate     = false
     @AppStorage("meetingsDefaultSkillID") private var defaultSkillID    = "generic"
     @AppStorage("meetingsAutoCleanTranscript") private var autoCleanTranscript = true
+    @AppStorage("meetingsAutoDiarize")    private var autoDiarize       = false
+    @AppStorage("diarizationEngine")      private var diarizationEngine = ""
     @AppStorage("meetingsAudioDucking")   private var audioDucking      = true
     @AppStorage("meetingsClippingDetect") private var clippingDetect    = true
     @AppStorage("meetingsChunkSeconds")   private var chunkSeconds      = 30
@@ -27,6 +29,15 @@ struct MeetingSettingsView: View {
                             .help("Removes filler words (um, uh, like...), fixes punctuation, and tightens grammar without changing meaning. You can also clean any meeting on demand from the Transcripts window.")
                     }
                 }
+                Toggle(isOn: $autoDiarize) {
+                    HStack(spacing: 4) {
+                        Text("Auto-diarize after stop")
+                        Image(systemName: "info.circle")
+                            .foregroundColor(.secondary)
+                            .help("Tags each transcript segment with a speaker letter (A, B, C…) using the engine picked in Settings → Models → Diarization. Applies to both live recordings and imported files.")
+                    }
+                }
+                .disabled(diarizationEngine.isEmpty)
                 Toggle("Auto-summarize after stop", isOn: $autoSummarize)
                 Picker("Default skill", selection: $defaultSkillID) {
                     if !skillsRegistry.skillPacks.isEmpty {
@@ -45,8 +56,8 @@ struct MeetingSettingsView: View {
                 .disabled(!autoSummarize)
                 Toggle("Auto-send to integrations after summary", isOn: $autoIntegrate)
                     .disabled(!autoSummarize)
-            } header: { Text("Summary") } footer: {
-                Text("After stop: stitch audio → optionally clean transcript → run summary with the chosen skill → optionally fan-out to enabled integrations.")
+            } header: { Text("Auto-pipeline (after stop)") } footer: {
+                Text("Each toggle is independent. The pipeline runs in order: Clean → Diarize → Summarize → Integrations. Skipping a step (e.g. Auto-clean off) just hands the unmodified transcript to the next step.")
                     .font(.caption).foregroundColor(.secondary)
             }
 

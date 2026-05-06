@@ -14,6 +14,7 @@ enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
     case hotkey        = "Hotkey"
     case models        = "Models"
     case skills        = "Skills"
+    case people        = "People"
     case vocabulary    = "Vocabulary"
     case integrations  = "Integrations"
     case debug         = "Debug"
@@ -30,6 +31,7 @@ enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
         case .hotkey:        "keyboard"
         case .models:        "brain"
         case .skills:        "wand.and.stars"
+        case .people:        "person.crop.square.filled.and.at.rectangle"
         case .vocabulary:    "text.book.closed"
         case .integrations:  "arrow.left.arrow.right"
         case .debug:         "ant"
@@ -61,6 +63,7 @@ struct SettingsView: View {
                 case .hotkey:        HotkeySettingsView()
                 case .models:        ModelsSettingsView()
                 case .skills:        SkillsSettingsView()
+                case .people:        PeopleSettingsView()
                 case .vocabulary:    VocabularySettingsView()
                 case .integrations:  IntegrationsSettingsView()
                 case .debug:         DebugSettingsView()
@@ -227,92 +230,7 @@ struct WhisperKitModelPicker: View {
 }
 
 // (Old AI Polish + About settings views were deleted — folded into
-//  Transcription and Home respectively.)
-
-#if false   // begin: dead AIPolish view (kept fenced out so type stays defined nowhere)
-private struct _DELETE_AIPolish_DEAD: View {
-    @EnvironmentObject private var secrets: SecretsStore
-    @AppStorage("enableLLMPolish")       private var enableLLMPolish      = true
-    @AppStorage("openRouterModel")       private var openRouterModel      = "anthropic/claude-3-5-haiku"
-    @AppStorage("polishRemoveFiller")    private var removeFiller         = true
-    @AppStorage("polishFixPunctuation")  private var fixPunctuation       = true
-    @AppStorage("polishFixGrammar")      private var fixGrammar           = false
-    @State private var openRouterVisible = false
-    @State private var customModelText   = ""
-
-    private let presetModels: [(id: String, label: String)] = [
-        ("anthropic/claude-3-5-haiku",         "Claude 3.5 Haiku (fast)"),
-        ("anthropic/claude-3-5-sonnet",        "Claude 3.5 Sonnet"),
-        ("openai/gpt-4o-mini",                 "GPT-4o Mini"),
-        ("openai/gpt-4o",                      "GPT-4o"),
-        ("google/gemini-flash-1.5",            "Gemini Flash 1.5"),
-        ("meta-llama/llama-3.1-8b-instruct",   "Llama 3.1 8B"),
-    ]
-
-    private var isCustomModel: Bool {
-        !presetModels.map(\.id).contains(openRouterModel)
-    }
-
-    var body: some View {
-        Form {
-            Section {
-                Toggle("Remove filler words & fix grammar", isOn: $enableLLMPolish)
-            } footer: {
-                Text("Polishes raw transcription using an LLM after each recording.")
-                    .font(.caption).foregroundColor(.secondary)
-            }
-
-            if enableLLMPolish {
-                Section {
-                    Toggle("Remove filler words", isOn: $removeFiller)
-                    Toggle("Fix punctuation & capitalization", isOn: $fixPunctuation)
-                    Toggle("Fix grammar", isOn: $fixGrammar)
-                } header: {
-                    Text("Cleanup Level")
-                } footer: {
-                    Text("Choose what the AI corrects. Less cleanup = closer to your original words.")
-                        .font(.caption).foregroundColor(.secondary)
-                }
-
-                Section("API Key") {
-                    APIKeyField(label: "OpenRouter API Key",
-                                text: $secrets.openRouterApiKey,
-                                visible: $openRouterVisible)
-                    Link("Get a free OpenRouter key →",
-                         destination: URL(string: "https://openrouter.ai")!)
-                        .font(.system(size: 12))
-                    Text("Stored securely in macOS Keychain.")
-                        .font(.caption).foregroundColor(.secondary)
-                }
-
-                Section("Model") {
-                    Picker("Model", selection: modelBinding) {
-                        ForEach(presetModels, id: \.id) { m in
-                            Text(m.label).tag(m.id)
-                        }
-                        Divider()
-                        Text("Custom…").tag("custom")
-                    }
-                    if isCustomModel {
-                        TextField("Model ID (e.g. mistralai/mistral-7b-instruct)",
-                                  text: $openRouterModel)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .navigationTitle("AI Polish")
-    }
-
-    private var modelBinding: Binding<String> {
-        Binding(
-            get: { isCustomModel ? "custom" : openRouterModel },
-            set: { if $0 != "custom" { openRouterModel = $0 } }
-        )
-    }
-}
-#endif      // end: dead AIPolish view
+//  Transcription and Home respectively. The fenced-out copy is gone.)
 
 // MARK: - Vocabulary
 
