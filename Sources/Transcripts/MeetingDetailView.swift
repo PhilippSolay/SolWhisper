@@ -27,6 +27,11 @@ struct MeetingDetailView: View {
     @State private var diarizeProgress: Double?
     @State private var suggesting: Bool = false
     @State private var suggestError: String?
+
+    /// Holds the name of the operation that just finished so the progress
+    /// strip can flash a green "<Op> done" for ~2.5s before clearing.
+    /// Set via `flashDone(_:)` and auto-cleared by a delayed Task.
+    @State private var doneFlash: String? = nil
     @State private var suggestSheet: [SpeakerNameSuggester.Suggestion]?
     @StateObject private var calendar = CalendarIntegration.shared
     @StateObject private var voiceProfiles = VoiceProfileStore.shared
@@ -60,6 +65,7 @@ struct MeetingDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     actionRow
+                    progressStrip
                     titleAndMeta
                     calendarEventBox
                     contextField
@@ -217,6 +223,81 @@ struct MeetingDetailView: View {
 
     private func loadSummary() {
         summary = try? store.loadSummary(for: meeting)
+    }
+
+    /// Flashes a green "<name> done" message in the progress strip for
+    /// ~2.5s, then clears. Called from the success branches of the four
+    /// long-running operations (Re-transcribe / Clean / Diarize / Summary).
+    @MainActor
+    private func flashDone(_ name: String) {
+        doneFlash = name
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            if doneFlash == name {
+                doneFlash = nil
+            }
+        }
+    }
+
+    // MARK: - Progress strip
+
+    /// One-line strip below the action buttons showing live progress for the
+    /// currently running operation, or a brief "done" confirmation. Hidden
+    /// when nothing is running and no recent completion to flash.
+    @ViewBuilder
+    private var progressStrip: some View {
+        if retranscribing {
+            operationProgressRow(name: "Re-transcribing", progress: retranscribeProgress)
+        } else if diarizing {
+            operationProgressRow(name: "Diarizing", progress: diarizeProgress)
+        } else if cleaning {
+            operationProgressRow(name: "Cleaning", progress: nil)
+        } else if summarizing {
+            operationProgressRow(name: "Summarizing", progress: nil)
+        } else if let done = doneFlash {
+            operationDoneRow(name: done)
+        }
+    }
+
+    /// Linear progress bar + label for an in-flight operation. Shows a
+    /// percentage when `progress` is non-nil; falls back to an indeterminate
+    /// barber-pole linear bar otherwise.
+    @ViewBuilder
+    private func operationProgressRow(name: String, progress: Double?) -> some View {
+        HStack(spacing: 10) {
+            if let progress {
+                ProgressView(value: progress)
+                    .progressViewStyle(.linear)
+                    .frame(width: 240)
+                Text("\(name)… \(Int((progress * 100).rounded()))%")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.secondary)
+            } else {
+                ProgressView()
+                    .progressViewStyle(.linear)
+                    .frame(width: 240)
+                Text("\(name)…")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+        .transition(.opacity)
+    }
+
+    /// Green checkmark + "<Name> done" — flashes briefly via `flashDone`
+    /// after a successful run.
+    private func operationDoneRow(name: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundColor(.green)
+                .font(.system(size: 12))
+            Text("\(name) done")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.secondary)
+            Spacer()
+        }
+        .transition(.opacity)
     }
 
     // MARK: - Sections
@@ -813,6 +894,7 @@ struct MeetingDetailView: View {
                 if let reloaded = try? store.loadTranscript(for: meeting) {
                     transcript = reloaded
                 }
+                flashDone("Diarize")
             }
         }
     }
@@ -846,6 +928,7 @@ struct MeetingDetailView: View {
                 transcript = result.document
                 DebugLog.shared.log(icon: "🔁", label: "Re-transcribe done",
                                     value: "\(result.document.segments.count) segments · model=\(model)")
+                flashDone("Re-transcribe")
             } catch {
                 retranscribeError = error.localizedDescription
                 DebugLog.shared.log(icon: "🔁", label: "Re-transcribe failed",
@@ -988,6 +1071,7 @@ struct MeetingDetailView: View {
                 cleanReport = result.report
                 DebugLog.shared.log(icon: "🧹", label: "Manual clean done",
                                     value: "modified=\(result.report.segmentsModified) artifacts=\(result.report.artifactsDropped) blanked=\(result.report.segmentsBlanked) · \(resolved.providerLabel) · \(resolved.modelID)")
+                flashDone("Clean")
             } catch let err as CleanupPass.CleanError {
                 if case .partial(_, let done, let total) = err {
                     // Partial = some segments did get cleaned. Persist what
@@ -1032,6 +1116,7 @@ struct MeetingDetailView: View {
                 summary = s
                 DebugLog.shared.log(icon: "📝", label: "Pack summarize done",
                                     value: "type=\(s.meetingType ?? "?") · \(resolved.modelID)")
+                flashDone("Summary")
             } catch {
                 summaryError = error.localizedDescription
                 DebugLog.shared.log(icon: "📝", label: "Pack summarize failed",
@@ -1063,6 +1148,7 @@ struct MeetingDetailView: View {
                                                       skill: skill)
                 try store.writeSummary(s, for: meeting)
                 summary = s
+                flashDone("Summary")
             } catch {
                 summaryError = error.localizedDescription
                 DebugLog.shared.log(icon: "📝", label: "Manual summarize failed",
@@ -1207,21 +1293,26 @@ private struct TranscriptSegmentRow: View, Equatable {
     }
 
     /// Cycling palette so each speaker letter (A..H) gets a distinct color.
-    /// Muted, desaturated tones designed to read calmly on a dark background
-    /// — sophisticated rather than the default saturated SwiftUI rainbow.
+    /// Muted but clearly distinct — eight hues spread evenly around the wheel
+    /// so adjacent palette indices never collide on a dark background. Replaces
+    /// the earlier set where slate-blue/periwinkle and amber/taupe were too
+    /// close to read as different speakers.
     private static let speakerPalette: [Color] = [
-        Color(red: 0.46, green: 0.66, blue: 0.86), // soft slate blue
-        Color(red: 0.62, green: 0.78, blue: 0.62), // sage green
-        Color(red: 0.86, green: 0.66, blue: 0.46), // warm amber
-        Color(red: 0.74, green: 0.58, blue: 0.82), // soft lavender
-        Color(red: 0.86, green: 0.58, blue: 0.62), // dusty rose
-        Color(red: 0.46, green: 0.74, blue: 0.74), // muted teal
-        Color(red: 0.78, green: 0.62, blue: 0.50), // soft taupe
-        Color(red: 0.66, green: 0.68, blue: 0.82)  // dusty periwinkle
+        Color(red: 0.42, green: 0.62, blue: 0.84), // steel blue
+        Color(red: 0.55, green: 0.78, blue: 0.60), // forest sage
+        Color(red: 0.88, green: 0.62, blue: 0.40), // burnt amber
+        Color(red: 0.72, green: 0.55, blue: 0.85), // dusty lavender
+        Color(red: 0.90, green: 0.55, blue: 0.55), // coral rose
+        Color(red: 0.40, green: 0.76, blue: 0.70), // sea teal
+        Color(red: 0.92, green: 0.78, blue: 0.42), // muted saffron
+        Color(red: 0.78, green: 0.55, blue: 0.72)  // mauve plum
     ]
 
     var body: some View {
-        HStack(alignment: .top, spacing: 20) {
+        // Custom per-column spacing: a tight 8pt gap between timestamp and
+        // speaker, then a fixed-width speaker column so the transcript text
+        // column always starts at the same x regardless of name length.
+        HStack(alignment: .top, spacing: 0) {
             Button(action: onTap) {
                 Text(formatTimestamp(segment.start))
                     .font(.system(size: 11, design: .monospaced))
@@ -1229,9 +1320,11 @@ private struct TranscriptSegmentRow: View, Equatable {
                     .frame(width: 56, alignment: .leading)
             }
             .buttonStyle(.plain)
+            .padding(.trailing, 8)
 
             speakerBadge
-                .fixedSize(horizontal: true, vertical: false)
+                .frame(width: 84, alignment: .leading)
+                .padding(.trailing, 20)
 
             // Prefer cleanedText when the cleanup pass produced one; fall
             // back to the raw transcript otherwise.

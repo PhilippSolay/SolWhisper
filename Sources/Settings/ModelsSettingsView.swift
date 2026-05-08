@@ -11,7 +11,12 @@ struct ModelsSettingsView: View {
     @AppStorage("transcriptionBackend")     private var shortBackend      = "apple"
     @AppStorage("deepgramApiKey")           private var deepgramApiKey    = ""
     @AppStorage("whisperKitModel")          private var whisperKitModel   = WhisperKitClient.defaultModel
+    @AppStorage("meetingsBackend")          private var meetingsBackend   = "whisperkit"
     @AppStorage("meetingsWhisperKitModel")  private var meetingsWKModel   = WhisperKitClient.defaultModel
+    // Parakeet (NVIDIA TDT, runs on the Apple Neural Engine via FluidAudio).
+    // Versions: v2 = English-only, lowest WER. v3 = 25 EU + JA/ZH.
+    @AppStorage("parakeetVersionShort")     private var parakeetVersionShort    = "v3"
+    @AppStorage("parakeetVersionMeetings")  private var parakeetVersionMeetings = "v3"
 
     @AppStorage("dictationLLMProvider")   private var dictationProvider  = "openrouter"
     @AppStorage("cleanupLLMProvider")     private var cleanupProvider    = "openrouter"
@@ -35,6 +40,7 @@ struct ModelsSettingsView: View {
                 Picker("STT Short", selection: $shortBackend) {
                     Text("Apple Speech  (free · on-device)").tag("apple")
                     Text("WhisperKit  (offline · highest accuracy)").tag("whisperkit")
+                    Text("Parakeet TDT  (NVIDIA · on-device · ANE)").tag("parakeet")
                     Text("Deepgram nova-3  (cloud)").tag("deepgram")
                 }
                 switch shortBackend {
@@ -47,20 +53,38 @@ struct ModelsSettingsView: View {
                                 visible: $deepgramVisible)
                 case "whisperkit":
                     WhisperKitModelPicker(title: "WhisperKit model", modelID: $whisperKitModel)
+                case "parakeet":
+                    Picker("Parakeet model", selection: $parakeetVersionShort) {
+                        Text("v3 — 25 EU + JA/ZH (multilingual)").tag("v3")
+                        Text("v2 — English only (lowest WER)").tag("v2")
+                    }
+                    Text("Streaming wires up in v0.7 via FluidAudio's SlidingWindowAsrManager. The picker persists your choice now; dictation falls back to Apple Speech until then.")
+                        .font(.caption).foregroundColor(.orange)
                 default:
                     EmptyView()
                 }
             } header: { Text("STT Short — dictation engine") }
 
             Section {
-                LabeledContent("STT Meetings") {
-                    Text("WhisperKit")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
+                Picker("STT Meetings", selection: $meetingsBackend) {
+                    Text("WhisperKit  (offline)").tag("whisperkit")
+                    Text("Parakeet TDT  (NVIDIA · on-device · ANE)").tag("parakeet")
                 }
-                WhisperKitModelPicker(title: "WhisperKit model", modelID: $meetingsWKModel)
+                switch meetingsBackend {
+                case "whisperkit":
+                    WhisperKitModelPicker(title: "WhisperKit model", modelID: $meetingsWKModel)
+                case "parakeet":
+                    Picker("Parakeet model", selection: $parakeetVersionMeetings) {
+                        Text("v3 — 25 EU + JA/ZH (multilingual)").tag("v3")
+                        Text("v2 — English only (lowest WER)").tag("v2")
+                    }
+                    Text("File transcription wires up in v0.7. Picker persists your choice; meetings fall back to WhisperKit until then. ~190× realtime on M-series; v2 ≈ 1.69% WER on LibriSpeech.")
+                        .font(.caption).foregroundColor(.orange)
+                default:
+                    EmptyView()
+                }
             } header: { Text("STT Meetings — meeting engine") } footer: {
-                Text("Apple Speech and Deepgram are mic-only / streaming-only and can't transcribe pre-recorded meeting audio. Meetings always use WhisperKit.")
+                Text("Apple Speech and Deepgram are mic-only / streaming-only and can't transcribe pre-recorded meeting audio. WhisperKit and Parakeet both run on-device and accept file URLs.")
                     .font(.caption).foregroundColor(.secondary)
             }
 

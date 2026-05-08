@@ -27,6 +27,16 @@ class TranscriptionController: ObservableObject {
     /// Backend locked at startRecording() to avoid mid-session UserDefaults changes
     private var activeBackend = "apple"
 
+    // Audio-flow watchdog — surfaces a friendly error if the chosen mic
+    // never delivers a buffer (e.g. AirPods routing failure, mic muted at
+    // the OS level, device permission revoked mid-session).
+    /// Called by AppDelegate to show the error in the overlay. Receives a
+    /// short, user-readable message.
+    var onAudioFailure: ((String) -> Void)?
+    private var firstBufferReceived = false
+    private var audioWatchdog: Task<Void, Never>?
+    private static let audioWatchdogDelay: TimeInterval = 1.8
+
     // MARK: - Start
 
     func startRecording() {
@@ -47,6 +57,8 @@ class TranscriptionController: ObservableObject {
 
     func stopRecording(completion: @escaping (String?) -> Void) {
         guard isRecording else { completion(nil); return }
+        audioWatchdog?.cancel()
+        audioWatchdog = nil
         isPaused = false
         audioEngine?.isPaused = false
 
@@ -97,6 +109,8 @@ class TranscriptionController: ObservableObject {
     }
 
     func cancel() {
+        audioWatchdog?.cancel()
+        audioWatchdog = nil
         audioEngine?.stop()
         deepgramClient?.disconnect()
         appleClient?.cancel()
@@ -127,11 +141,12 @@ class TranscriptionController: ObservableObject {
 
         audioEngine = AudioEngine()
         audioEngine?.onAudioData      = { [weak self] data  in self?.deepgramClient?.send(audioData: data) }
-        audioEngine?.onLevelUpdate    = { [weak self] level in Task { @MainActor in self?.audioLevel = level } }
+        audioEngine?.onLevelUpdate    = { [weak self] level in Task { @MainActor in self?.handleLevel(level) } }
         audioEngine?.onSpectrumUpdate = { [weak self] bins in Task { @MainActor in self?.spectrumBins = bins } }
 
         do {
             try audioEngine?.start()
+            startAudioWatchdog(deviceLabel: currentDeviceLabel())
         } catch {
             DebugLog.shared.log(icon: "🎙", label: "AudioEngine failed", value: "\(error)", ok: false)
             isRecording = false
@@ -149,11 +164,12 @@ class TranscriptionController: ObservableObject {
         whisperClient = client
 
         client.onTranscript    = { [weak self] text, _ in Task { @MainActor in self?.liveTranscript = text } }
-        client.onLevelUpdate   = { [weak self] level in Task { @MainActor in self?.audioLevel = level } }
+        client.onLevelUpdate   = { [weak self] level in Task { @MainActor in self?.handleLevel(level) } }
         client.onSpectrumUpdate = { [weak self] bins in Task { @MainActor in self?.spectrumBins = bins } }
 
         do {
             try client.start()
+            startAudioWatchdog(deviceLabel: currentDeviceLabel())
         } catch {
             DebugLog.shared.log(icon: "🟣", label: "WhisperKit failed", value: "\(error)", ok: false)
             isRecording = false
@@ -168,15 +184,64 @@ class TranscriptionController: ObservableObject {
 
         appleClient = AppleSpeechClient()
         appleClient?.onTranscript    = { [weak self] text, _ in Task { @MainActor in self?.liveTranscript = text } }
-        appleClient?.onLevelUpdate   = { [weak self] level  in Task { @MainActor in self?.audioLevel = level } }
+        appleClient?.onLevelUpdate   = { [weak self] level  in Task { @MainActor in self?.handleLevel(level) } }
         appleClient?.onSpectrumUpdate = { [weak self] bins  in Task { @MainActor in self?.spectrumBins = bins } }
 
         do {
             try appleClient?.start()
+            startAudioWatchdog(deviceLabel: currentDeviceLabel())
         } catch {
             DebugLog.shared.log(icon: "🍎", label: "Apple Speech failed", value: "\(error)", ok: false)
             isRecording = false
         }
+    }
+
+    // MARK: - Audio-flow watchdog
+
+    /// Bumps the first-buffer flag and forwards the level to the published
+    /// audioLevel. Called from each engine's `onLevelUpdate` so we don't have
+    /// to weave bookkeeping into every backend.
+    private func handleLevel(_ level: Float) {
+        if !firstBufferReceived {
+            firstBufferReceived = true
+            audioWatchdog?.cancel()
+            audioWatchdog = nil
+        }
+        audioLevel = level
+    }
+
+    /// Schedules a one-shot check that fires after `audioWatchdogDelay` seconds.
+    /// If no audio buffer has arrived by then, surfaces an error to the UI.
+    private func startAudioWatchdog(deviceLabel: String) {
+        firstBufferReceived = false
+        audioWatchdog?.cancel()
+        let delay = Self.audioWatchdogDelay
+        audioWatchdog = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, self.isRecording, !self.firstBufferReceived else { return }
+                self.handleAudioFailure(deviceLabel: deviceLabel)
+            }
+        }
+    }
+
+    private func handleAudioFailure(deviceLabel: String) {
+        let message = "No audio from \(deviceLabel). Open the tray menu → Audio to pick a different input, or check System Settings → Privacy & Security → Microphone."
+        DebugLog.shared.log(icon: "🎙", label: "Audio failure",
+                            value: "no buffers within \(Self.audioWatchdogDelay)s on \(activeBackend) · device=\(deviceLabel)",
+                            ok: false)
+        // Stop the silent engine so the indicator doesn't keep spinning.
+        cancel()
+        onAudioFailure?(message)
+    }
+
+    /// Returns a short, user-readable name for the currently selected input
+    /// device (e.g. "AirPods Pro", "MacBook Pro Microphone", or "system default").
+    private func currentDeviceLabel() -> String {
+        guard let uid = PreferredInputDevice.uid else { return "system default mic" }
+        let match = PreferredInputDevice.availableInputs().first(where: { $0.uid == uid })
+        return match?.name ?? "the selected input device"
     }
 
     // MARK: - Shared finish (LLM polish)

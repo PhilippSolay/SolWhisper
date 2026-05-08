@@ -103,6 +103,41 @@ class OverlayWindowController: NSObject {
         hideTranscriptBubble()
     }
 
+    /// Shows a friendly error banner inside the overlay (e.g. "No audio
+    /// from AirPods Pro — try a different input"). The banner auto-clears
+    /// after `duration` seconds via the closure passed in. The caller is
+    /// responsible for tearing down the recording session itself.
+    func showAudioError(_ message: String,
+                        duration: TimeInterval = 4.0,
+                        onDismiss: (() -> Void)? = nil) {
+        if panel == nil { createPanel() }
+        // Resize the panel so the wider error banner doesn't get clipped.
+        if let panel = panel {
+            let w: CGFloat = 380
+            let h: CGFloat = 64
+            let x = panel.frame.midX - w / 2
+            let y = panel.frame.midY - h / 2
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.18
+                panel.animator().setFrame(NSRect(x: x, y: y, width: w, height: h),
+                                          display: true)
+            }
+            panel.alphaValue = 1
+            panel.orderFront(nil)
+        }
+        hideTranscriptBubble()
+        phaseState.audioError = message
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+            guard let self else { return }
+            // Only clear if this is still the same error — don't clobber a
+            // newer one set in the meantime.
+            if self.phaseState.audioError == message {
+                self.phaseState.audioError = nil
+                onDismiss?()
+            }
+        }
+    }
+
     /// Toggle between listening and paused phases
     func togglePausePhase() {
         if phaseState.phase == .paused {

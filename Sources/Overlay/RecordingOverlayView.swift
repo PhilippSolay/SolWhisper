@@ -15,6 +15,10 @@ final class OverlayPhaseState: ObservableObject {
     /// Latched-on for the past second when the mic peaks above -1 dBFS.
     /// Driven by `ClippingDetector` in meeting mode.
     @Published var isClipping: Bool = false
+    /// When non-nil, the overlay swaps the pill for an error banner showing
+    /// this message (e.g. "No audio from AirPods Pro — pick another input").
+    /// Cleared automatically by OverlayWindowController after a few seconds.
+    @Published var audioError: String? = nil
     var onAccept: (() -> Void)?
     var onCancel: (() -> Void)?
     var onResume: (() -> Void)?
@@ -81,19 +85,54 @@ struct RecordingOverlayView: View {
 
     var body: some View {
         ZStack {
-            switch phaseState.phase {
-            case .circle:
-                circlePhase
-            case .pill, .listening:
-                listeningPhase
-            case .paused:
-                pausedPhase
-            case .processing:
-                processingPhase
+            if let message = phaseState.audioError {
+                errorPhase(message)
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+            } else {
+                switch phaseState.phase {
+                case .circle:
+                    circlePhase
+                case .pill, .listening:
+                    listeningPhase
+                case .paused:
+                    pausedPhase
+                case .processing:
+                    processingPhase
+                }
             }
         }
         .animation(.spring(response: 0.32, dampingFraction: 0.78), value: phaseState.phase)
+        .animation(.easeInOut(duration: 0.2), value: phaseState.audioError)
         .onHover { isHovering = $0 }
+    }
+
+    // MARK: - Error phase — replaces the pill when audio fails to flow
+
+    /// Wider, red-tinted banner with an exclamation icon + plain-language
+    /// message. Auto-dismisses via OverlayWindowController; the user only
+    /// needs to read it.
+    private func errorPhase(_ message: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(Color(red: 1.0, green: 0.55, blue: 0.45))
+            Text(message)
+                .font(.system(size: 12, weight: .regular))
+                .foregroundColor(.white.opacity(0.95))
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(width: 360, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color(white: 0.08, opacity: 0.96))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Color(red: 1.0, green: 0.4, blue: 0.35).opacity(0.55), lineWidth: 1)
+        )
     }
 
     // MARK: - 1. Circle phase — mic icon

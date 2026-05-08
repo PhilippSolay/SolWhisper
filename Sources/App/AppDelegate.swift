@@ -146,6 +146,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Refresh launch-on-login mirror state (in case user toggled it via
         // System Settings while the app was closed).
         LaunchAtLogin.shared.refresh()
+
+        // Surface a friendly error in the overlay if the chosen mic doesn't
+        // deliver any audio within ~2 seconds of pressing record. Catches
+        // routing failures (HAL device-set silently failed), revoked mic
+        // permission mid-session, and physically muted hardware.
+        transcriptionController.onAudioFailure = { [weak self] message in
+            Task { @MainActor in
+                self?.handleAudioFailure(message: message)
+            }
+        }
+    }
+
+    /// Shows the error banner and tears down the recording session after
+    /// the banner has been visible long enough to read.
+    @MainActor
+    private func handleAudioFailure(message: String) {
+        removeEscMonitor()
+        updateStatusBarIcon(recording: false)
+        AudioFeedback.play(.stop)
+        PlaybackController.recordingDidEnd()
+        recordingStartedAt = nil
+        // The overlay stays up for the duration; onDismiss hides it cleanly.
+        overlayWindowController?.showAudioError(message) { [weak self] in
+            self?.overlayWindowController?.hideOverlay()
+        }
     }
 
     /// Spawns the pill (in `.meeting` mode) when MeetingController enters

@@ -58,12 +58,30 @@ enum PreferredInputDevice {
     /// Routes the given AVAudioEngine's input through the preferred device.
     /// Must be called BEFORE `engine.start()` (or after a stop/start cycle).
     /// No-op when no preferred device is set.
+    ///
+    /// macOS HAL gotcha: `kAudioOutputUnitProperty_CurrentDevice` only takes
+    /// effect when the audio unit is uninitialized. Setting it on an already-
+    /// initialized unit silently no-ops and the unit keeps reading the OLD
+    /// device's format, so the tap receives no buffers. The fix is the
+    /// documented Uninitialize → SetProperty → Initialize sequence.
     static func applyToInputNode(_ engine: AVAudioEngine) {
-        guard let uid, let cadID = coreAudioDeviceID(for: uid) else { return }
-        let unit = engine.inputNode.audioUnit
-        guard let unit else { return }
+        guard let uid else { return }
+        guard let cadID = coreAudioDeviceID(for: uid) else {
+            Task { @MainActor in
+                DebugLog.shared.log(icon: "🎤", label: "Mic device not found",
+                                    value: "uid=\(uid) — falling back to system default",
+                                    ok: false)
+            }
+            return
+        }
+        guard let unit = engine.inputNode.audioUnit else { return }
+
+        // Uninitialize first. Safe to call even if not yet initialized —
+        // returns kAudioUnitErr_Uninitialized which we ignore.
+        _ = AudioUnitUninitialize(unit)
+
         var deviceID = cadID
-        let result = AudioUnitSetProperty(
+        let setResult = AudioUnitSetProperty(
             unit,
             kAudioOutputUnitProperty_CurrentDevice,
             kAudioUnitScope_Global,
@@ -71,16 +89,28 @@ enum PreferredInputDevice {
             &deviceID,
             UInt32(MemoryLayout<AudioDeviceID>.size)
         )
-        let routedID = cadID
-        if result != noErr {
+
+        // Re-initialize. If init fails (e.g. the device is unavailable or
+        // its format is incompatible with the connected graph), fall back
+        // by clearing the device override — the engine will then use the
+        // system default on the next start.
+        let initResult = AudioUnitInitialize(unit)
+
+        if setResult != noErr {
             Task { @MainActor in
-                DebugLog.shared.log(icon: "🎤", label: "Mic routing failed",
-                                    value: "uid=\(uid) status=\(result)", ok: false)
+                DebugLog.shared.log(icon: "🎤", label: "Mic routing — set failed",
+                                    value: "uid=\(uid) status=\(setResult)", ok: false)
+            }
+        } else if initResult != noErr {
+            Task { @MainActor in
+                DebugLog.shared.log(icon: "🎤", label: "Mic routing — init failed",
+                                    value: "uid=\(uid) status=\(initResult) — falling back to default",
+                                    ok: false)
             }
         } else {
             Task { @MainActor in
                 DebugLog.shared.log(icon: "🎤", label: "Mic routed",
-                                    value: "uid=\(uid) coreAudioID=\(routedID)")
+                                    value: "uid=\(uid) coreAudioID=\(cadID)")
             }
         }
     }
