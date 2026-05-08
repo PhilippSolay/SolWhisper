@@ -3,6 +3,17 @@
   <channel>
     <title>SolWhisper Updates</title>
     <language>en</language>    <item>
+      <title>Version 0.5.1</title>
+      <pubDate>Fri, 08 May 2026 17:56:34 +0800</pubDate>
+      <sparkle:version>132</sparkle:version>
+      <sparkle:shortVersionString>0.5.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/PhilippSolay/SolWhisper/releases/download/v0.5.1/SolWhisper-v0.5.1.dmg"
+                 sparkle:edSignature="TD7mRP/40zWD2Rjmcdh5ZhLgiGZWOQmJuHk3SxNt4hV0bdgRPvt6WwGhG6zwaHCn7zx2ja5qTaPgiqEY6SaGDg=="
+                 length="9472571"
+                 type="application/octet-stream"/>
+    </item>
+    <item>
       <title>Version 0.5.0</title>
       <pubDate>Wed, 06 May 2026 21:42:43 +0800</pubDate>
       <sparkle:version>127</sparkle:version>
