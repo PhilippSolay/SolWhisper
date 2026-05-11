@@ -200,9 +200,20 @@ class AppleSpeechClient {
         task?.cancel()
         task     = nil
         request  = nil
+        // vDSP setup is a Core Foundation-managed handle — nilling the Swift
+        // var is not enough; the backing buffers need an explicit destroy.
+        // WhisperKitClient + MeetingAudioEngine.SpectrumComputer already do
+        // this; missing it here leaked ~1 KB per session.
+        if let setup = fftSetup { vDSP_DFT_DestroySetup(setup) }
         fftSetup = nil
         onLevelUpdate?(0)
         onSpectrumUpdate?([Float](repeating: 0, count: AudioEngine.fftBinCount))
+    }
+
+    deinit {
+        // Defensive: if start() succeeded and we somehow never reached
+        // tearDown(), still free the vDSP handle.
+        if let setup = fftSetup { vDSP_DFT_DestroySetup(setup) }
     }
 
     private func emitLevel(_ buffer: AVAudioPCMBuffer) {
