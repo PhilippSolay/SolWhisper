@@ -50,15 +50,12 @@ targets:
           - "local-secrets.example.json"
           - ".DS_Store"
           - "SkillPacks"
-          - "Skills"
       # SkillPacks + Skills both ship as folder references (blue folders) so
       # the nested directory structure is preserved at runtime. Without this,
       # xcodegen flattens everything to the bundle root, and the loader's
       # `Bundle.main.urls(... subdirectory: "Skills" / "SkillPacks/…")`
       # returns nothing because the subdir doesn't exist in the bundle.
       - path: Resources/SkillPacks
-        type: folder
-      - path: Resources/Skills
         type: folder
     settings:
       base:
