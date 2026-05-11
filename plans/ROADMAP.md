@@ -2,6 +2,7 @@
 
 **As of:** 0.4.0-alpha.4 (May 2026)
 **Source documents reviewed:** [MEETING-FEATURES-PLAN.md](./MEETING-FEATURES-PLAN.md), [OCR-FEATURES-PLAN.md](./OCR-FEATURES-PLAN.md), [V0.4-TEST-PROTOCOL.md](./V0.4-TEST-PROTOCOL.md)
+**Companion:** [EXPLORATION.md](./EXPLORATION.md) — research notes, reasoning, and pushback for future-leaning ideas (STT Agent, wake word, transcripts→agents, F4 takeover).
 
 This document is the single forward-looking source of truth. Anything called
 "v0.5" in code comments or settings copy is enumerated here. Items are grouped
