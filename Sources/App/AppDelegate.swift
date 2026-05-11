@@ -35,6 +35,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return c
     }()
     private(set) lazy var snipperController = ScreenSnipperController()
+    private(set) lazy var translationController = TranslationController()
     private var meetingMenuItem: NSMenuItem?
     private var audioMenuItem: NSMenuItem?
     private var audioSubmenuRef: NSMenu?
@@ -65,6 +66,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             "snipHotkeyModifierMask":   11,   // ⌃⌥⌘
             "transcriptsHotkeyKeyCode":      17,  // T — Open Transcripts
             "transcriptsHotkeyModifierMask": 11,  // ⌃⌥⌘
+            "translateHotkeyKeyCode":        37,  // L — Translate from screen
+            "translateHotkeyModifierMask":   11,  // ⌃⌥⌘
+            "translateTargetLanguage":       "en",
+            // Translate engine + routing — registered alongside the existing
+            // role defaults so a fresh install has the same fallback shape
+            // as dictation / cleanup / summary. Engine default left as the
+            // empty string so `TranslationEngineKind.current` keeps deriving
+            // it from OS capability (.apple on 15+, .llm below).
+            "translationLLMProvider":        "openrouter",
             "openRouterModel":    "anthropic/claude-3-5-haiku",
             "whisperKitModel":    WhisperKitClient.defaultModel,
             "meetingsWhisperKitModel": WhisperKitClient.defaultModel,
@@ -411,6 +421,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         snip.image = trayIcon("rectangle.dashed.and.paperclip")
         menu.addItem(snip)
 
+        let translateKE = menuKeyEquivalent(
+            keyCode: UserDefaults.standard.integer(forKey: "translateHotkeyKeyCode"),
+            modifierMask: UserDefaults.standard.integer(forKey: "translateHotkeyModifierMask")
+        )
+        let translate = NSMenuItem(title: "Translate Snap…", action: #selector(translateScreenText),
+                                    keyEquivalent: translateKE.key)
+        translate.keyEquivalentModifierMask = translateKE.modifiers
+        translate.image = trayIcon("globe")
+        menu.addItem(translate)
+
         let upload = NSMenuItem(title: "Upload audio file…", action: #selector(uploadAudioFile), keyEquivalent: "")
         upload.image = trayIcon("arrow.up.doc")
         menu.addItem(upload)
@@ -487,7 +507,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.openTranscripts()
             }
         }
+        hotkeyManager?.onTranslateHotkeyPressed = { [weak self] in
+            Task { @MainActor in
+                self?.translateScreenText()
+            }
+        }
         hotkeyManager?.startListening()
+    }
+
+    @objc func translateScreenText() {
+        translationController.translate()
     }
 
     @objc func snipScreenText() {

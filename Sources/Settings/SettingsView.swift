@@ -10,6 +10,7 @@ enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
     case transcription = "STT Short"
     case meetings      = "STT Meetings"
     case ocr           = "Screen Capture"
+    case translate     = "Translate"
     case audio         = "Audio"
     case hotkey        = "Hotkey"
     case models        = "Models"
@@ -27,6 +28,7 @@ enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
         case .transcription: "waveform"
         case .meetings:      "person.2.wave.2"
         case .ocr:           "rectangle.dashed.and.paperclip"
+        case .translate:     "globe"
         case .audio:         "speaker.wave.3"
         case .hotkey:        "keyboard"
         case .models:        "brain"
@@ -59,6 +61,7 @@ struct SettingsView: View {
                 case .transcription: TranscriptionSettingsView()
                 case .meetings:      MeetingSettingsView()
                 case .ocr:           OCRSettingsView()
+                case .translate:     TranslateSettingsView()
                 case .audio:         AudioSettingsView()
                 case .hotkey:        HotkeySettingsView()
                 case .models:        ModelsSettingsView()
