@@ -64,8 +64,16 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     // MARK: - Lifecycle
 
     func start() async throws {
-        precondition(phase == .idle || phase == .stopped || phase == .failed(""),
-                     "SystemAudioCapture already running")
+        // `.failed(let msg)` is also a valid state to retry from — the
+        // previous Phase.== with `.failed("")` only matched the empty-string
+        // payload, so any real error in a prior start() left this
+        // precondition tripping on the retry. Pattern-match instead.
+        let canStart: Bool
+        switch phase {
+        case .idle, .stopped, .failed: canStart = true
+        default:                       canStart = false
+        }
+        precondition(canStart, "SystemAudioCapture already running")
         phase = .starting
 
         let bundleID = Bundle.main.bundleIdentifier ?? "cloud.solay.SolWhisper"
