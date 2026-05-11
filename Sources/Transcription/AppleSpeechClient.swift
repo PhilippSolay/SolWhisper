@@ -120,7 +120,10 @@ class AppleSpeechClient {
             DebugLog.shared.log(icon: "🍎", label: "Apple Speech stop", value: snap.isEmpty ? "…" : "\"\(String(snap.prefix(60)))\"")
         }
 
-        // 3-second fallback in case isFinal never arrives
+        // 3-second fallback in case isFinal never arrives. We MUST tear
+        // down the engine here too — otherwise the audio unit keeps
+        // holding the mic device open and macOS shows the orange
+        // microphone indicator forever.
         let work = DispatchWorkItem { [weak self] in
             guard let self, let cb = self.finalCB else { return }
             self.finalCB = nil
@@ -129,6 +132,7 @@ class AppleSpeechClient {
                 DebugLog.shared.log(icon: "🍎", label: "Apple Speech fallback",
                                     value: t.isEmpty ? "empty" : "\"\(t)\"", ok: !t.isEmpty)
             }
+            self.tearDown()
             cb(t.isEmpty ? nil : t)
         }
         fallback = work
@@ -189,6 +193,10 @@ class AppleSpeechClient {
     private func tearDown() {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        // Force the HAL audio unit to release the device so the macOS
+        // mic-in-use indicator clears immediately. Without this, the
+        // orange dot can linger after stop on some configurations.
+        PreferredInputDevice.releaseInputNode(engine)
         task?.cancel()
         task     = nil
         request  = nil

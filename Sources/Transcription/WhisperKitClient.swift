@@ -103,6 +103,9 @@ final class WhisperKitClient {
     func stopAndFinalize(completion: @escaping (String?) -> Void) {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        // Release the HAL audio unit's hold on the device so macOS clears
+        // the mic-in-use indicator the moment the user stops.
+        PreferredInputDevice.releaseInputNode(engine)
         recordingFile = nil
 
         guard let url = recordingURL else {
@@ -174,6 +177,7 @@ final class WhisperKitClient {
         transcribeTask = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        PreferredInputDevice.releaseInputNode(engine)
         recordingFile = nil
         if let url = recordingURL { try? FileManager.default.removeItem(at: url) }
         recordingURL = nil

@@ -101,6 +101,9 @@ final class MeetingAudioEngine {
         phase = .stopping
         micEngine.inputNode.removeTap(onBus: 0)
         micEngine.stop()
+        // Release the HAL audio unit's hold on the input device so the
+        // macOS mic-in-use indicator clears the moment the meeting ends.
+        PreferredInputDevice.releaseInputNode(micEngine)
         if capturesSystemAudio {
             await systemCapture.stop()
         }

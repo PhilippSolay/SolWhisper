@@ -72,6 +72,9 @@ class AudioEngine {
     func stop() {
         mixer.removeTap(onBus: 0)
         engine.stop()
+        // Release the HAL audio unit's hold on the input device so macOS
+        // clears the mic-in-use indicator immediately.
+        PreferredInputDevice.releaseInputNode(engine)
         engine.detach(mixer)
         converter = nil
         agcGain   = 1.0
