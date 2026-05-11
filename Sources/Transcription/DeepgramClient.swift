@@ -159,7 +159,10 @@ class DeepgramClient: NSObject {
         let isFinal     = (json["is_final"]    as? Bool) ?? false
         let speechFinal = (json["speech_final"] as? Bool) ?? false
 
-        print("Deepgram ← is_final=\(isFinal) speech_final=\(speechFinal): \"\(transcript)\"")
+        // Note: a raw stdout dump of every interim transcript used to live
+        // here. Removed — the DebugLog calls below already record final and
+        // first-word transcripts (truncated), and dumping raw user speech
+        // to stdout was a privacy footgun in release builds.
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
