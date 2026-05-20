@@ -29,10 +29,11 @@ final class TranslateResultBubble {
     private let onDismiss: () -> Void
 
     private var panel: NSPanel?
-    private var dismissTimer: Timer?
     private var globalKeyMonitor: Any?
     private var localKeyMonitor: Any?
-    private var clickOutsideMonitor: Any?
+    /// Observes `NSWindow.didMoveNotification` so we can persist the
+    /// dragged position to UserDefaults — next open returns to that spot.
+    private var moveObserver: NSObjectProtocol?
     private var didDismiss = false
     /// The most recent successful translation. Nil until the first engine
     /// result lands. Used to gate click-to-paste so the footer's "click to
@@ -40,9 +41,12 @@ final class TranslateResultBubble {
     /// the translation is still in flight.
     private var latestTranslation: String?
 
-    /// Idle dismiss timeout. A touch longer than SnipBubble's 8s because
-    /// translation takes a moment and the user may still be reading.
-    static var idleTimeoutSeconds: TimeInterval = 12
+    // The bubble used to auto-dismiss on idle timeout, click-outside, and
+    // observed ⌘V. Per product call: it now only closes on the explicit X
+    // button, Esc, ↩/click-to-paste-here, or a ⌘V into another app (i.e.
+    // the user pasted the translation somewhere). Nothing else dismisses it,
+    // and the window is freely draggable so it can be parked while the user
+    // works.
 
     init(sourceText: String,
          pasteTarget: NSRunningApplication?,
@@ -55,7 +59,7 @@ final class TranslateResultBubble {
     deinit {
         if let m = globalKeyMonitor { NSEvent.removeMonitor(m) }
         if let m = localKeyMonitor { NSEvent.removeMonitor(m) }
-        if let m = clickOutsideMonitor { NSEvent.removeMonitor(m) }
+        if let m = moveObserver { NotificationCenter.default.removeObserver(m) }
     }
 
     // MARK: - Lifecycle
@@ -63,13 +67,18 @@ final class TranslateResultBubble {
     func present() {
         let initialTarget = UserDefaults.standard.string(forKey: "translateTargetLanguage")
                          ?? TranslationLanguage.defaultTargetCode
+        // Auto-detect the source language and pre-select it in the dropdown.
+        // The user can still override via the menu — see `languageMenuPill`.
         let detected = LanguageDetector.detect(sourceText)
+        if let detected {
+            DebugLog.shared.log(icon: "🌐", label: "Translate source detected",
+                                value: "\(detected.code) (conf \(String(format: "%.2f", detected.confidence)))")
+        }
         let engine = TranslationEngineKind.current
 
         let view = TranslateBubbleView(
             sourceText: sourceText,
             initialDetectedCode: detected?.code,
-            initialDetectionConfidence: detected?.confidence ?? 0,
             initialTargetCode: initialTarget,
             engineKind: engine,
             onPasteAndClose: { [weak self] in self?.pasteAndDismiss() },
@@ -100,7 +109,25 @@ final class TranslateResultBubble {
         p.collectionBehavior          = [.canJoinAllSpaces, .fullScreenAuxiliary]
         p.contentView                 = hosting
         p.alphaValue                  = 0
+        // Free-form dragging. `isMovableByWindowBackground` makes any
+        // click-and-drag on the borderless panel reposition it; a plain
+        // click without drag still passes through to SwiftUI's tap handler
+        // (which pastes the translation), so the two gestures coexist.
+        p.isMovable                   = true
+        p.isMovableByWindowBackground = true
         self.panel = p
+
+        // Persist the dragged origin every time the user moves the panel.
+        // didMove fires after each drag completes, so we only write on
+        // settled positions (not during a live drag).
+        moveObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didMoveNotification,
+            object: p,
+            queue: .main
+        ) { [weak self] _ in
+            guard let panel = self?.panel else { return }
+            self?.saveOrigin(panel.frame.origin)
+        }
 
         p.orderFront(nil)
         NSAnimationContext.runAnimationGroup { ctx in
@@ -109,7 +136,6 @@ final class TranslateResultBubble {
         }
 
         installDismissalMonitors()
-        startIdleTimer()
     }
 
     private func dismiss(reason: DismissReason) {
@@ -178,24 +204,75 @@ final class TranslateResultBubble {
 
     // MARK: - Position
 
+    /// UserDefaults keys for the persisted bubble position. Stored as two
+    /// doubles so we don't have to deal with `NSPoint` archival quirks.
+    private enum PositionKeys {
+        static let originX = "translateBubbleOriginX"
+        static let originY = "translateBubbleOriginY"
+    }
+
+    /// Returns where the bubble should appear on present. Priority:
+    /// 1. A previously remembered position (if it still fits on some screen)
+    /// 2. Docked to the right edge of the screen the cursor is on
+    /// 3. A fallback `(200, 200)` if the screen list is empty
     private func positionedOrigin() -> NSPoint {
+        let size = TranslateBubbleView.bubbleSize
+
+        if let remembered = rememberedOriginIfVisible(size: size) {
+            return remembered
+        }
+
         let mouseLocation = NSEvent.mouseLocation
         let screen = NSScreen.screens.first(where: { $0.frame.contains(mouseLocation) })
                   ?? NSScreen.main
         guard let visible = screen?.visibleFrame else {
             return NSPoint(x: 200, y: 200)
         }
-        let size = TranslateBubbleView.bubbleSize
-        let centeredX = mouseLocation.x - size.width / 2
-        let belowY = mouseLocation.y - size.height - 24
-        let clampedX = min(max(centeredX, visible.minX + 8), visible.maxX - size.width - 8)
-        let clampedY = max(belowY, visible.minY + 8)
-        return NSPoint(x: clampedX, y: clampedY)
+        // Right-edge dock, vertically centered. 16pt inset from the screen
+        // edge so the shadow doesn't get clipped by the bezel.
+        let rightMargin: CGFloat = 16
+        let x = visible.maxX - size.width - rightMargin
+        let y = visible.midY - size.height / 2
+        let clampedY = max(visible.minY + 8, min(y, visible.maxY - size.height - 8))
+        return NSPoint(x: x, y: clampedY)
+    }
+
+    /// Reads the saved origin and returns it only when at least the
+    /// majority of the bubble would still be on one of the user's current
+    /// screens — protects against a display-config change leaving the
+    /// bubble stranded off-screen.
+    private func rememberedOriginIfVisible(size: CGSize) -> NSPoint? {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: PositionKeys.originX) != nil,
+              defaults.object(forKey: PositionKeys.originY) != nil else {
+            return nil
+        }
+        let candidate = NSPoint(
+            x: defaults.double(forKey: PositionKeys.originX),
+            y: defaults.double(forKey: PositionKeys.originY)
+        )
+        let frame = NSRect(origin: candidate, size: size)
+        let visible = NSScreen.screens.first { screen in
+            screen.visibleFrame.intersects(frame)
+        } != nil
+        return visible ? candidate : nil
+    }
+
+    /// Persists the panel's current origin to UserDefaults. Called on every
+    /// drag completion via `NSWindow.didMoveNotification` so the next open
+    /// reuses the spot the user parked the bubble.
+    private func saveOrigin(_ origin: NSPoint) {
+        let defaults = UserDefaults.standard
+        defaults.set(Double(origin.x), forKey: PositionKeys.originX)
+        defaults.set(Double(origin.y), forKey: PositionKeys.originY)
     }
 
     // MARK: - Dismissal monitors
 
     private func installDismissalMonitors() {
+        // Local monitor — fires when the bubble's panel is the key window.
+        // Esc closes; Return pastes the translation into the previously
+        // focused app and closes.
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
             if event.keyCode == 53 {  // Esc
@@ -209,6 +286,10 @@ final class TranslateResultBubble {
             return event
         }
 
+        // Global monitor — observes ⌘V in another app and treats that as
+        // "the user pasted the translation somewhere", so we close. This is
+        // one of the two sanctioned auto-dismiss paths; the other is the
+        // explicit X / Esc / ↩ / click-bubble flow.
         globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return }
             let isV = event.keyCode == 9
@@ -217,28 +298,12 @@ final class TranslateResultBubble {
                 Task { @MainActor in self.dismiss(reason: .observedPasteV) }
             }
         }
-
-        clickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.leftMouseDown, .rightMouseDown]
-        ) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor in self.dismiss(reason: .clickOutside) }
-        }
     }
 
     private func teardownMonitors() {
-        if let m = globalKeyMonitor   { NSEvent.removeMonitor(m); globalKeyMonitor = nil }
-        if let m = localKeyMonitor    { NSEvent.removeMonitor(m); localKeyMonitor = nil }
-        if let m = clickOutsideMonitor { NSEvent.removeMonitor(m); clickOutsideMonitor = nil }
-        dismissTimer?.invalidate(); dismissTimer = nil
-    }
-
-    private func startIdleTimer() {
-        dismissTimer?.invalidate()
-        dismissTimer = Timer.scheduledTimer(withTimeInterval: Self.idleTimeoutSeconds,
-                                             repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.dismiss(reason: .timeout) }
-        }
+        if let m = globalKeyMonitor { NSEvent.removeMonitor(m); globalKeyMonitor = nil }
+        if let m = localKeyMonitor  { NSEvent.removeMonitor(m); localKeyMonitor  = nil }
+        if let m = moveObserver { NotificationCenter.default.removeObserver(m); moveObserver = nil }
     }
 }
 
@@ -283,14 +348,12 @@ private struct TranslateBubbleView: View {
 
     let sourceText: String
     let initialDetectedCode: String?
-    let initialDetectionConfidence: Double
     let initialTargetCode: String
     let engineKind: TranslationEngineKind
     let onPasteAndClose: () -> Void
     let onCopyTranslated: (String) -> Void
     let onClose: () -> Void
     let onTargetChange: (String) -> Void
-
     @State private var sourceLanguageCode: String?
     @State private var targetLanguageCode: String
     @State private var status: TranslateStatus = .idle
@@ -301,14 +364,13 @@ private struct TranslateBubbleView: View {
     /// user picks a new target before the current one finishes.
     @State private var llmTask: Task<Void, Never>?
 
-    static let bubbleWidth:  CGFloat = 500
-    static let bubbleHeight: CGFloat = 320
+    static let bubbleWidth:  CGFloat = 560
+    static let bubbleHeight: CGFloat = 500
     static let cornerRadius: CGFloat = 18
     static let bubbleSize            = CGSize(width: bubbleWidth, height: bubbleHeight)
 
     init(sourceText: String,
          initialDetectedCode: String?,
-         initialDetectionConfidence: Double,
          initialTargetCode: String,
          engineKind: TranslationEngineKind,
          onPasteAndClose: @escaping () -> Void,
@@ -317,7 +379,6 @@ private struct TranslateBubbleView: View {
          onTargetChange: @escaping (String) -> Void) {
         self.sourceText = sourceText
         self.initialDetectedCode = initialDetectedCode
-        self.initialDetectionConfidence = initialDetectionConfidence
         self.initialTargetCode = initialTargetCode
         self.engineKind = engineKind
         self.onPasteAndClose = onPasteAndClose
@@ -364,16 +425,12 @@ private struct TranslateBubbleView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "globe")
-                .foregroundColor(.white.opacity(0.55))
-                .font(.system(size: 11))
-
+        HStack(spacing: 10) {
             sourceLanguageTag
 
             Image(systemName: "arrow.right")
                 .foregroundColor(.white.opacity(0.4))
-                .font(.system(size: 10))
+                .font(.system(size: 11))
 
             targetLanguagePicker
 
@@ -389,38 +446,20 @@ private struct TranslateBubbleView: View {
         }
     }
 
-    @ViewBuilder
+    /// Source language pill. Always a dropdown (no fixed-text branch), even
+    /// for high-confidence detections — the user can always override what
+    /// the detector picked. The detected language is pre-selected via
+    /// `sourceLanguageCode` set at init.
     private var sourceLanguageTag: some View {
-        // High-confidence detection renders as a fixed tag. Low confidence
-        // or missing detection shows an override picker so the user can
-        // correct mis-identified short captures.
-        if initialDetectionConfidence >= LanguageDetector.confidenceThreshold,
-           let code = sourceLanguageCode {
-            Text(TranslationLanguage.named(code).label.uppercased())
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(.white.opacity(0.65))
-                .padding(.horizontal, 6).padding(.vertical, 2)
-                .background(RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.white.opacity(0.08)))
-        } else {
-            Menu {
-                Button("Auto-detect") { sourceLanguageCode = nil; bumpToken() }
-                Divider()
-                ForEach(TranslationLanguage.curated) { lang in
-                    Button(lang.label) {
-                        sourceLanguageCode = lang.code
-                        bumpToken()
-                    }
-                }
-            } label: {
-                Text(sourceLanguageLabel)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.65))
+        languageMenuPill(
+            currentLabel: sourceLanguageLabel,
+            currentCode:  sourceLanguageCode,
+            includesAutoDetect: true,
+            onSelect: { code in
+                sourceLanguageCode = code
+                bumpToken()
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.visible)
-            .fixedSize()
-        }
+        )
     }
 
     private var sourceLanguageLabel: String {
@@ -431,15 +470,42 @@ private struct TranslateBubbleView: View {
     }
 
     private var targetLanguagePicker: some View {
+        languageMenuPill(
+            currentLabel: TranslationLanguage.named(targetLanguageCode).label.uppercased(),
+            currentCode:  targetLanguageCode,
+            includesAutoDetect: false,
+            onSelect: { code in
+                guard let code, targetLanguageCode != code else { return }
+                targetLanguageCode = code
+                onTargetChange(code)
+                bumpToken()
+            }
+        )
+    }
+
+    /// Shared menu-as-pill renderer for the source and target. Uses
+    /// `.menuStyle(.button)` + `.buttonStyle(.plain)` so the background pill
+    /// we draw on the label actually renders (the `.borderlessButton` style
+    /// silently strips backgrounds and forces its own chevron position) and
+    /// `.menuIndicator(.hidden)` so only our explicitly-placed chevron shows
+    /// — to the *right* of the label, matching system menus.
+    @ViewBuilder
+    private func languageMenuPill(
+        currentLabel: String,
+        currentCode: String?,
+        includesAutoDetect: Bool,
+        onSelect: @escaping (String?) -> Void
+    ) -> some View {
         Menu {
+            if includesAutoDetect {
+                Button("Auto-detect") { onSelect(nil) }
+                Divider()
+            }
             ForEach(TranslationLanguage.curated) { lang in
                 Button {
-                    guard targetLanguageCode != lang.code else { return }
-                    targetLanguageCode = lang.code
-                    onTargetChange(lang.code)
-                    bumpToken()
+                    onSelect(lang.code)
                 } label: {
-                    if lang.code == targetLanguageCode {
+                    if lang.code == currentCode {
                         Label(lang.label, systemImage: "checkmark")
                     } else {
                         Text(lang.label)
@@ -447,12 +513,24 @@ private struct TranslateBubbleView: View {
                 }
             }
         } label: {
-            Text(TranslationLanguage.named(targetLanguageCode).label)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.white.opacity(0.9))
+            HStack(spacing: 5) {
+                Text(currentLabel)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.55))
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundColor(.white.opacity(0.85))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.white.opacity(0.10))
+            )
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.visible)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
         .fixedSize()
     }
 
@@ -468,7 +546,7 @@ private struct TranslateBubbleView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
         }
-        .frame(maxHeight: 110)
+        .frame(maxHeight: 190)
     }
 
     @ViewBuilder
@@ -489,19 +567,19 @@ private struct TranslateBubbleView: View {
         case .done(let translated):
             ScrollView {
                 Text(translated)
-                    .font(.system(size: 14, weight: .regular))
+                    .font(.system(size: 13, weight: .regular))
                     .foregroundColor(.white.opacity(0.95))
                     .lineSpacing(3)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
             }
-            .frame(maxHeight: 130)
+            .frame(maxHeight: 250)
 
         case .sameLanguage:
             VStack(alignment: .leading, spacing: 4) {
                 Text(sourceText)
-                    .font(.system(size: 14))
+                    .font(.system(size: 13))
                     .foregroundColor(.white.opacity(0.95))
                     .lineSpacing(3)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -509,7 +587,7 @@ private struct TranslateBubbleView: View {
                     .font(.system(size: 10))
                     .foregroundColor(.white.opacity(0.45))
             }
-            .frame(maxHeight: 130)
+            .frame(maxHeight: 250)
 
         case .error(let message):
             VStack(alignment: .leading, spacing: 6) {
@@ -623,12 +701,34 @@ private struct TranslateBubbleView: View {
     // MARK: - Engine callbacks
 
     private func handleEngineResult(_ translated: String) {
-        status = .done(translated)
-        onCopyTranslated(translated)
+        let normalized = Self.normalizeOutput(translated)
+        status = .done(normalized)
+        onCopyTranslated(normalized)
     }
 
     private func handleEngineError(_ message: String) {
         status = .error(message)
+    }
+
+    /// Translators (especially Apple's framework on `\n`-separated input)
+    /// sometimes re-render paragraph breaks as runs of two or more newlines,
+    /// producing visibly double-spaced output. Collapse any run of 3+ blank
+    /// lines back to a single blank line so the translation matches the
+    /// source's vertical density.
+    fileprivate static func normalizeOutput(_ text: String) -> String {
+        var s = text.replacingOccurrences(
+            of: #"\n{3,}"#,
+            with: "\n\n",
+            options: .regularExpression
+        )
+        // Trim trailing whitespace per line so a single accidental space at
+        // line-end doesn't keep collapse from matching.
+        s = s.replacingOccurrences(
+            of: #"[ \t]+\n"#,
+            with: "\n",
+            options: .regularExpression
+        )
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

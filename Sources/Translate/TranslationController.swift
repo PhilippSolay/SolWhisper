@@ -76,10 +76,12 @@ final class TranslationController: ObservableObject {
             return
         }
 
-        // Reuse the OCR post-processor with the user's line-break setting,
-        // so a snip from a wrapped paragraph translates as a paragraph
-        // rather than line-by-line.
-        let text = OCRPostProcessor.process(observations, mode: lineBreakModeSetting)
+        // Always use `.remove` for translate — wrapped lines within a
+        // paragraph get joined into a single sentence so the translator
+        // sees coherent input (and doesn't emit per-line output with
+        // double-spaced paragraph breaks). The user's OCR line-break
+        // preference still applies to Text Snap; this is translate-specific.
+        let text = OCRPostProcessor.process(observations, mode: .remove)
         guard !text.isEmpty else {
             DebugLog.shared.log(icon: "🌐", label: "Translate empty",
                                 value: "\(observations.count) raw lines but post-process produced empty text",
@@ -104,11 +106,6 @@ final class TranslationController: ObservableObject {
     }
 
     // MARK: - Settings shorthand
-
-    private var lineBreakModeSetting: LineBreakMode {
-        let raw = UserDefaults.standard.string(forKey: "ocrLineBreakMode") ?? "keep"
-        return LineBreakMode(rawValue: raw) ?? .keep
-    }
 
     private var recognitionLevelSetting: VNRequestTextRecognitionLevel {
         let raw = UserDefaults.standard.string(forKey: "ocrRecognitionLevel") ?? "accurate"

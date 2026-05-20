@@ -18,9 +18,10 @@ struct ModelsSettingsView: View {
     @AppStorage("parakeetVersionShort")     private var parakeetVersionShort    = "v3"
     @AppStorage("parakeetVersionMeetings")  private var parakeetVersionMeetings = "v3"
 
-    @AppStorage("dictationLLMProvider")   private var dictationProvider  = "openrouter"
-    @AppStorage("cleanupLLMProvider")     private var cleanupProvider    = "openrouter"
-    @AppStorage("summaryLLMProvider")     private var summaryProvider    = "openrouter"
+    @AppStorage("dictationLLMProvider")    private var dictationProvider    = "openrouter"
+    @AppStorage("cleanupLLMProvider")      private var cleanupProvider      = "openrouter"
+    @AppStorage("summaryLLMProvider")      private var summaryProvider      = "openrouter"
+    @AppStorage("translationLLMProvider")  private var translationProvider  = "openrouter"
 
     // Diarization — engine choice + cloud API key (Deepgram reuses the
     // existing STT key; AssemblyAI gets its own Keychain entry).
@@ -133,6 +134,7 @@ struct ModelsSettingsView: View {
                 routingPicker("Dictation cleanup", selection: $dictationProvider)
                 routingPicker("Meeting cleanup",   selection: $cleanupProvider)
                 routingPicker("Meeting summary",   selection: $summaryProvider)
+                routingPicker("Translation",       selection: $translationProvider)
             } header: { Text("Routing") } footer: {
                 if modelStore.models.isEmpty {
                     Text("No configured models yet — routing falls back to OpenRouter / Ollama defaults. Add a model below to route to it directly.")

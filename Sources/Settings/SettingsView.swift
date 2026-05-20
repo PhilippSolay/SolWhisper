@@ -324,11 +324,15 @@ struct HotkeySettingsView: View {
     /// Transcripts window hotkey — global open.
     @AppStorage("transcriptsHotkeyKeyCode")      private var transcriptsHotkeyKeyCode      = 0
     @AppStorage("transcriptsHotkeyModifierMask") private var transcriptsHotkeyModifierMask = 0
+    /// Translate Snap hotkey — paired with the Translate-from-screen flow.
+    @AppStorage("translateHotkeyKeyCode")        private var translateHotkeyKeyCode        = 0
+    @AppStorage("translateHotkeyModifierMask")   private var translateHotkeyModifierMask   = 0
     @State private var isRecordingHotkey         = false
     @State private var isRecordingPauseHotkey    = false
     @State private var isRecordingSnipHotkey     = false
     @State private var isRecordingMeetingHotkey  = false
     @State private var isRecordingTranscriptsHotkey = false
+    @State private var isRecordingTranslateHotkey   = false
 
     var body: some View {
         Form {
@@ -367,6 +371,13 @@ struct HotkeySettingsView: View {
                     keyCode:      $snipHotkeyKeyCode,
                     modifierMask: $snipHotkeyModifierMask,
                     isRecording:  $isRecordingSnipHotkey
+                )
+                HotkeyRow(
+                    title: "Translate Snap",
+                    subtitle: "Drag a region; translated text goes to clipboard",
+                    keyCode:      $translateHotkeyKeyCode,
+                    modifierMask: $translateHotkeyModifierMask,
+                    isRecording:  $isRecordingTranslateHotkey
                 )
             } header: {
                 Text("Keyboard Shortcuts")
