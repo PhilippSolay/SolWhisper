@@ -43,9 +43,16 @@ enum VoiceMatcher {
         }
         guard !byLetter.isEmpty else { return [] }
 
+        // Use the streaming resampler for the same reason VoiceProfileEmbedder
+        // does — the synchronous AudioConverter path hangs on long files,
+        // which silently disabled auto-matching for every meeting longer
+        // than a few minutes.
         let samples: [Float]
         do {
-            samples = try AudioConverter().resampleAudioFile(audioURL)
+            samples = try await StreamingAudioResampler.resampleToMonoFloat32(
+                url: audioURL,
+                progress: { _ in }
+            )
         } catch {
             DebugLog.shared.log(icon: "🎯", label: "Voice match read failed",
                                 value: "\(error)", ok: false)

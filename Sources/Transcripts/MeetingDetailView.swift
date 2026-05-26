@@ -35,6 +35,8 @@ struct MeetingDetailView: View {
     @State private var suggestError: String?
     @State private var sending: Bool = false
     @State private var sendError: String?
+    @State private var capturingVoiceprint: Bool = false
+    @State private var voiceprintError: String?
     @State private var renamingFromSummary: Bool = false
     /// Token to debounce auto-save of the context field. Each keystroke
     /// kicks a new Task and bumps this UUID; only the latest survives the
@@ -115,6 +117,9 @@ struct MeetingDetailView: View {
                         Text(err).font(.system(size: 12)).foregroundColor(.red)
                     }
                     if let err = sendError {
+                        Text(err).font(.system(size: 12)).foregroundColor(.red)
+                    }
+                    if let err = voiceprintError {
                         Text(err).font(.system(size: 12)).foregroundColor(.red)
                     }
                     bodyTabBar
@@ -331,6 +336,8 @@ struct MeetingDetailView: View {
             operationProgressRow(name: "Cleaning", progress: nil)
         } else if summarizing {
             operationProgressRow(name: "Summarizing", progress: nil)
+        } else if capturingVoiceprint {
+            operationProgressRow(name: "Capturing voiceprint", progress: nil)
         } else if let done = doneFlash {
             operationDoneRow(name: done)
         }
@@ -1190,12 +1197,16 @@ struct MeetingDetailView: View {
         guard let audioURL = candidates.first(where: {
             $0.lastPathComponent.hasPrefix("audio.")
         }) else {
+            voiceprintError = "Couldn't capture voiceprint — audio file missing."
             DebugLog.shared.log(icon: "👥", label: "Voiceprint skipped",
                                 value: "no audio file in meeting folder",
                                 ok: false)
             return
         }
+        capturingVoiceprint = true
+        voiceprintError = nil
         Task { @MainActor in
+            defer { capturingVoiceprint = false }
             do {
                 try await VoiceProfileEmbedder.capture(
                     profile: profile,
@@ -1204,10 +1215,13 @@ struct MeetingDetailView: View {
                     audioURL: audioURL,
                     store: voiceProfiles
                 )
+                flashDone("Voiceprint")
             } catch let err as VoiceProfileEmbedder.EmbedError {
+                voiceprintError = "Voiceprint capture failed: \(err.localizedDescription)"
                 DebugLog.shared.log(icon: "👥", label: "Voiceprint capture failed",
                                     value: err.localizedDescription, ok: false)
             } catch {
+                voiceprintError = "Voiceprint capture failed: \(error.localizedDescription)"
                 DebugLog.shared.log(icon: "👥", label: "Voiceprint capture failed",
                                     value: "\(error)", ok: false)
             }

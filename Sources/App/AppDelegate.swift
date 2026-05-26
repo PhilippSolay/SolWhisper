@@ -141,6 +141,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         scanForOrphanMeetingsOnLaunch()
         bindMeetingPillToController()
 
+        // One-shot voice-print backfill. The previous embedder hung on long
+        // files, leaving every saved profile as name-only. The new
+        // streaming resampler unsticks capture — this pass retroactively
+        // captures embeddings for any profile with a known source meeting,
+        // then re-runs the voice matcher across recent meetings.
+        // Idempotent and runs in the background.
+        if #available(macOS 14.0, *) {
+            VoiceProfileBackfill.runAtLaunch(meetingStore: meetingStore,
+                                              profileStore: VoiceProfileStore.shared)
+        }
+
         // Convert any pre-alpha.4 legacy routing state into ConfiguredModels.
         // One-shot, gated by `modelStoreLegacyMigrationDone`.
         LegacyModelMigration.migrateIfNeeded()
