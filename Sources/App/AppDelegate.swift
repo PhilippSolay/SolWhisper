@@ -27,8 +27,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var importWindowClosers: [URL: ImportWindowCloser] = [:]
     private(set) lazy var meetingController: MeetingController = {
         let c = MeetingController(store: meetingStore)
+        // Open the Transcripts window with this meeting selected the moment
+        // post-processing starts (stitching). The user immediately sees the
+        // pipeline progress indicator instead of a generic "processing" pill.
+        c.onProcessingStarted = { [weak self] meetingID in
+            self?.openTranscriptsAndSelect(meetingID)
+        }
         c.onProcessed = { [weak self] _ in
-            self?.openTranscripts()
             // Drive any queued orphan recoveries.
             self?.startNextRecoveryIfIdle()
         }
@@ -237,7 +242,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ensureMeetingPill()
             meetingPillController?.phaseState.phase = .paused
         case .stopping, .processing:
-            meetingPillController?.showProcessing()
+            // Hide the pill instead of showing the dictation-style processing
+            // dots. The Transcripts window has been opened with this meeting
+            // selected (see onProcessingStarted) and shows a phase-aware
+            // pipeline indicator — much more informative than a vague pill.
+            meetingPillController?.forceHide()
+            meetingPillController = nil
         case .idle:
             meetingPillController?.forceHide()
             meetingPillController = nil
@@ -673,10 +683,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if transcriptsWindowController == nil {
             transcriptsWindowController = TranscriptsWindowController(
                 store: meetingStore,
-                onUpload: { [weak self] in self?.uploadAudioFile() }
+                onUpload: { [weak self] in self?.uploadAudioFile() },
+                meetingController: meetingController
             )
         }
         transcriptsWindowController?.openAndReload()
+    }
+
+    /// Same as `openTranscripts` but additionally drives selection to the
+    /// given meeting. Used by the post-recording handoff so the user lands
+    /// on the call that just finished, with its pipeline progress visible.
+    func openTranscriptsAndSelect(_ meetingID: UUID) {
+        if transcriptsWindowController == nil {
+            transcriptsWindowController = TranscriptsWindowController(
+                store: meetingStore,
+                onUpload: { [weak self] in self?.uploadAudioFile() },
+                meetingController: meetingController
+            )
+        }
+        transcriptsWindowController?.openAndSelect(meetingID: meetingID)
     }
 
     // MARK: - File import (mode B)

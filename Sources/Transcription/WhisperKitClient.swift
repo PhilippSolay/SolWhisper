@@ -287,9 +287,16 @@ final class WhisperKitClient {
             DebugLog.shared.log(icon: "🟣", label: "WhisperKit transcribe start",
                                 value: audioPath.lastPathComponent)
         }
+        // VAD chunking splits long-form audio on silence and decodes chunks
+        // concurrently (concurrentWorkerCount defaults to 16 on macOS in
+        // WhisperKit's DecodingOptions init). Without this, long recordings
+        // run as a single sequential 30s-window decode and a 70-min file
+        // takes 15+ minutes per channel on M-series. With VAD chunking the
+        // same file is typically 3-5x faster with the same or better accuracy.
+        let options = DecodingOptions(chunkingStrategy: .vad)
         let results = try await whisper.transcribe(
             audioPath: audioPath.path,
-            decodeOptions: nil,
+            decodeOptions: options,
             callback: nil
         )
         let txMs = Int(Date().timeIntervalSince(txStart) * 1000)

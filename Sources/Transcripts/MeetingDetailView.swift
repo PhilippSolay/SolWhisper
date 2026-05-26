@@ -1,4 +1,5 @@
 import EventKit
+import MarkdownUI
 import SwiftUI
 
 /// Right pane: header card + audio scrubber + transcript scroll.
@@ -32,6 +33,15 @@ struct MeetingDetailView: View {
     @State private var diarizeTask: Task<Void, Never>?
     @State private var suggesting: Bool = false
     @State private var suggestError: String?
+    @State private var sending: Bool = false
+    @State private var sendError: String?
+    @State private var renamingFromSummary: Bool = false
+    /// Token to debounce auto-save of the context field. Each keystroke
+    /// kicks a new Task and bumps this UUID; only the latest survives the
+    /// 700ms wait and writes to disk.
+    @State private var contextSaveToken: UUID = UUID()
+    /// Briefly set to "Saved" after auto-save completes; cleared after ~1.8s.
+    @State private var contextSaveFlash: String?
 
     /// Holds the name of the operation that just finished so the progress
     /// strip can flash a green "<Op> done" for ~2.5s before clearing.
@@ -64,12 +74,27 @@ struct MeetingDetailView: View {
     enum CopyState { case idle, copied }
     @StateObject private var playback = PlaybackHolder()
     @StateObject private var skillsRegistry = SkillsRegistry.shared
+    /// Injected by `TranscriptsWindowController` via `.environmentObject(...)`.
+    /// **REQUIRED:** `@EnvironmentObject` traps at runtime on first access if
+    /// the binding is missing. The only host today is the Transcripts window,
+    /// which always injects the controller. Any future host (SwiftUI preview,
+    /// secondary window, test harness) MUST inject one too — there is no
+    /// silent fallback.
+    @EnvironmentObject private var meetingController: MeetingController
+    @State private var pipelineStartedAt: Date?
+    /// Bumped once per second while the pipeline is running so the elapsed
+    /// caption ticks up without re-rendering the whole detail view.
+    @State private var pipelineTick: Int = 0
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     actionRow
+                    if pipelineActive {
+                        MeetingPipelineProgress(steps: pipelineSteps,
+                                                totalElapsed: pipelineElapsed)
+                    }
                     progressStrip
                     titleAndMeta
                     calendarEventBox
@@ -87,6 +112,9 @@ struct MeetingDetailView: View {
                         Text(err).font(.system(size: 12)).foregroundColor(.red)
                     }
                     if let err = summaryError, summary == nil {
+                        Text(err).font(.system(size: 12)).foregroundColor(.red)
+                    }
+                    if let err = sendError {
                         Text(err).font(.system(size: 12)).foregroundColor(.red)
                     }
                     bodyTabBar
@@ -119,7 +147,25 @@ struct MeetingDetailView: View {
             }
         }
         .onAppear { reloadAll() }
-        .onChange(of: meeting.id) { _ in reloadAll() }
+        .onDisappear { flushContextIfDirty() }
+        .onChange(of: meeting.id) { _ in
+            flushContextIfDirty()
+            reloadAll()
+        }
+        .onChange(of: meetingController.processingPhase) { newPhase in
+            if newPhase != nil, pipelineStartedAt == nil,
+               meetingController.processingMeetingID == meeting.id {
+                pipelineStartedAt = Date()
+            }
+            if newPhase == nil {
+                pipelineStartedAt = nil
+            }
+        }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            // Re-render once per second while pipeline is running so the
+            // "Elapsed Xs" caption ticks up.
+            if pipelineActive { pipelineTick &+= 1 }
+        }
         // Keep caches in sync with the underlying data without redoing
         // the work on every keystroke.
         .onChange(of: transcript?.segments.count ?? -1) { _ in rebuildVisibleSegments() }
@@ -198,7 +244,7 @@ struct MeetingDetailView: View {
     }
 
     private func summarySection(_ summary: Summary) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Summary")
                     .font(.system(size: 14, weight: .semibold))
@@ -206,20 +252,34 @@ struct MeetingDetailView: View {
                 Text("· \(summary.skillId) · \(summary.llmModel)")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
+                Spacer()
+                Button {
+                    runRenameFromSummary()
+                } label: {
+                    Label("Rename from summary", systemImage: "textformat")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.borderless)
+                .disabled(renamingFromSummary
+                          || Self.extractTitleFromSummary(summary.rawMarkdown) == nil)
+                .help("Set the meeting title from the summary's first heading.")
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(summary.rawMarkdown, forType: .string)
+                } label: {
+                    Label("Copy MD", systemImage: "doc.on.doc")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.borderless)
+                .help("Copy the summary as Markdown.")
             }
-            if let attributed = try? AttributedString(markdown: summary.rawMarkdown) {
-                Text(attributed)
-                    .font(.system(size: 13))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-            } else {
-                Text(summary.rawMarkdown)
-                    .font(.system(size: 13))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-            }
+
+            Markdown(summary.rawMarkdown)
+                .markdownTheme(.solwhisperSummary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
         }
-        .padding(14)
+        .padding(16)
         .background(
             RoundedRectangle(cornerRadius: 10)
                 .fill(Color.secondary.opacity(0.08))
@@ -331,7 +391,10 @@ struct MeetingDetailView: View {
                 }
             }
             .disabled(retranscribing || cleaning || summarizing)
-            .help("Re-run WhisperKit on the saved audio file. Useful if you change the model or the previous transcript was bad.")
+            .completionOutline(transcribeDone)
+            .help(transcribeDone
+                  ? "Already transcribed. Click to re-run WhisperKit on the saved audio file."
+                  : "Run WhisperKit on the saved audio file.")
 
             Button {
                 runClean()
@@ -343,7 +406,10 @@ struct MeetingDetailView: View {
                 }
             }
             .disabled(cleaning || summarizing || retranscribing || (transcript?.segments.isEmpty ?? true))
-            .help("Remove filler words, fix punctuation, tighten grammar — preserves every substantive word.")
+            .completionOutline(cleanDone)
+            .help(cleanDone
+                  ? "Already cleaned. Click to re-clean (filler words, punctuation, grammar)."
+                  : "Remove filler words, fix punctuation, tighten grammar — preserves every substantive word.")
 
             Button {
                 runDiarize()
@@ -355,7 +421,10 @@ struct MeetingDetailView: View {
                 }
             }
             .disabled(diarizing || cleaning || summarizing || retranscribing || (transcript?.segments.isEmpty ?? true))
-            .help("Tag each segment with a speaker letter (A, B, C…) using the engine picked in Settings → Models → Diarization.")
+            .completionOutline(diarizeDone)
+            .help(diarizeDone
+                  ? "Already diarized. Click to re-tag segments with speaker letters."
+                  : "Tag each segment with a speaker letter (A, B, C…) using the engine picked in Settings → Models → Diarization.")
 
             Button {
                 runSuggestNames()
@@ -379,9 +448,25 @@ struct MeetingDetailView: View {
                 }
             }
             .disabled(summarizing || retranscribing)
+            .completionOutline(summarizeDone)
             .popover(isPresented: $showSkillPicker, arrowEdge: .top) {
                 skillPickerPopover
             }
+            .help(summarizeDone
+                  ? "Summary exists. Click to re-summarize with a different skill or type."
+                  : "Generate a structured meeting summary.")
+
+            Button {
+                runSendToIntegrations()
+            } label: {
+                if sending {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label("Send", systemImage: "paperplane")
+                }
+            }
+            .disabled(sending || !IntegrationFanout.hasAnyEnabled || summary == nil)
+            .help(sendHelpText)
 
             Button {
                 copyTranscriptMarkdown()
@@ -406,22 +491,77 @@ struct MeetingDetailView: View {
         .controlSize(.regular)
     }
 
+    // MARK: - Completion-state flags
+
+    /// True once a transcript with at least one segment exists for this meeting.
+    private var transcribeDone: Bool {
+        (transcript?.segments.isEmpty == false)
+    }
+    /// True once cleanup has populated `cleanedText` on at least one segment.
+    private var cleanDone: Bool {
+        transcript?.segments.contains(where: { $0.cleanedText != nil }) ?? false
+    }
+    /// True once diarization has tagged at least one segment with a speakerID.
+    private var diarizeDone: Bool {
+        transcript?.segments.contains(where: { $0.speakerID != nil }) ?? false
+    }
+    /// True once a summary has been generated.
+    private var summarizeDone: Bool { summary != nil }
+
+    private var sendHelpText: String {
+        if !IntegrationFanout.hasAnyEnabled {
+            return "Enable an integration (Hermes, Obsidian, or a custom webhook) in Settings → Integrations first."
+        }
+        if summary == nil {
+            return "Summarize first — the integrations send the summary alongside the transcript."
+        }
+        return "Push transcript + summary to \(IntegrationFanout.enabledNames.joined(separator: ", "))."
+    }
+
     private var titleAndMeta: some View {
         VStack(alignment: .leading, spacing: 4) {
-            // Click to edit; commit on submit / focus loss.
-            ZStack(alignment: .leading) {
+            // Click to edit; commit on submit / focus loss. The pencil
+            // button surfaces the edit affordance (the old "double-click
+            // somewhere on the title text" wasn't discoverable).
+            HStack(alignment: .center, spacing: 6) {
                 if titleEditing {
                     TextField("Title", text: $titleDraft, onCommit: commitTitle)
                         .textFieldStyle(.plain)
                         .font(.system(size: 22, weight: .semibold))
+                    Button {
+                        commitTitle()
+                    } label: {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundColor(.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Save title (Return)")
+                    Button {
+                        titleDraft = meeting.title
+                        titleEditing = false
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Cancel")
                 } else {
                     Text(titleDraft.isEmpty ? meeting.title : titleDraft)
                         .font(.system(size: 22, weight: .semibold))
                         .onTapGesture(count: 2) {
-                            titleDraft = meeting.title
-                            titleEditing = true
+                            beginTitleEdit()
                         }
-                        .help("Double-click to edit")
+                    Button {
+                        beginTitleEdit()
+                    } label: {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 13))
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Edit title")
                 }
             }
 
@@ -591,10 +731,20 @@ struct MeetingDetailView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.secondary)
                 Spacer()
-                if contextChanged {
-                    Button("Save") { commitContext() }
-                        .controlSize(.small)
-                        .keyboardShortcut("s", modifiers: .command)
+                if let flash = contextSaveFlash {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                            .font(.system(size: 11))
+                        Text(flash)
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                    .transition(.opacity)
+                } else if contextChanged {
+                    Text("Saving…")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
                 }
             }
             TextEditor(text: $contextDraft)
@@ -617,7 +767,34 @@ struct MeetingDetailView: View {
                 }
                 .onChange(of: contextDraft) { newValue in
                     contextChanged = newValue != (meeting.context ?? "")
+                    scheduleContextAutosave()
                 }
+        }
+    }
+
+    /// Debounced auto-save for the context field. Every keystroke kicks a
+    /// new Task and bumps `contextSaveToken`; only the latest survives the
+    /// 700ms wait. Previously the user had to click a Save button that only
+    /// appeared while the draft was dirty — easy to miss, and any error
+    /// from `commitContext` was swallowed by `try?`, so the field could
+    /// silently fail to persist.
+    private func scheduleContextAutosave() {
+        let token = UUID()
+        contextSaveToken = token
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard contextSaveToken == token else { return }
+            guard contextChanged else { return }
+            commitContext()
+            contextSaveFlash = "Saved"
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            // Only clear if no newer save has run in the interim — checking
+            // the token avoids erasing a fresh "Saved" toast from a later
+            // keystroke. The flash value being "Saved" alone isn't enough:
+            // a newer save would also set it to "Saved" and trip this branch.
+            if contextSaveToken == token, contextSaveFlash == "Saved" {
+                contextSaveFlash = nil
+            }
         }
     }
 
@@ -663,12 +840,191 @@ struct MeetingDetailView: View {
         titleEditing = false
     }
 
+    private func beginTitleEdit() {
+        titleDraft = meeting.title
+        titleEditing = true
+    }
+
     private func commitContext() {
         var updated = meeting
         updated.context = contextDraft.isEmpty ? nil : contextDraft
         updated.updatedAt = Date()
         try? store.update(updated)
         contextChanged = false
+    }
+
+    /// Save-on-disappear / on-meeting-switch escape hatch in case the user
+    /// navigates away inside the 700ms debounce window.
+    private func flushContextIfDirty() {
+        guard contextChanged else { return }
+        commitContext()
+    }
+
+    // MARK: - Send to integrations
+
+    private func runSendToIntegrations() {
+        sending = true
+        sendError = nil
+        Task { @MainActor in
+            defer { sending = false }
+            guard let document = transcript else {
+                sendError = "No transcript yet for this meeting."
+                return
+            }
+            guard let summary else {
+                sendError = "Summarize first — integrations send transcript + summary together."
+                return
+            }
+            let transcriptMD = FileTranscriber.renderMarkdown(document, title: meeting.title)
+            let result = await IntegrationFanout.send(
+                meeting: meeting,
+                transcriptMarkdown: transcriptMD,
+                summaryMarkdown: summary.rawMarkdown,
+                audioFileURL: store.audioFileURL(for: meeting)
+            )
+            if !result.failed.isEmpty {
+                sendError = "Failed: \(result.failed.joined(separator: ", "))"
+            }
+            if !result.sent.isEmpty {
+                flashDone("Sent (\(result.sent.joined(separator: ", ")))")
+            }
+        }
+    }
+
+    // MARK: - Rename from summary
+
+    /// Extract a title from the summary's first H1 ("# Meeting Summary — X")
+    /// and apply it. The skill output puts the meeting topic after the
+    /// em-dash; we strip the "Meeting Summary —" prefix when present.
+    private func runRenameFromSummary() {
+        guard let summary else { return }
+        guard let extracted = Self.extractTitleFromSummary(summary.rawMarkdown),
+              !extracted.isEmpty else {
+            DebugLog.shared.log(icon: "🏷️", label: "Rename from summary skipped",
+                                value: "no H1 in summary markdown", ok: false)
+            return
+        }
+        renamingFromSummary = true
+        defer { renamingFromSummary = false }
+        var updated = meeting
+        updated.title = extracted
+        updated.updatedAt = Date()
+        try? store.update(updated)
+        titleDraft = extracted
+        DebugLog.shared.log(icon: "🏷️", label: "Meeting renamed from summary",
+                            value: extracted)
+        flashDone("Renamed")
+    }
+
+    /// Parses the title from the summary markdown. Returns nil if no H1
+    /// line is found. Strips a leading "Meeting Summary —" / "—" prefix.
+    static func extractTitleFromSummary(_ markdown: String) -> String? {
+        for line in markdown.split(whereSeparator: \.isNewline) {
+            let s = line.trimmingCharacters(in: .whitespaces)
+            guard s.hasPrefix("# ") else { continue }
+            var title = String(s.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+            for prefix in ["Meeting Summary —", "Meeting Summary -",
+                           "Summary —", "Summary -"] {
+                if title.hasPrefix(prefix) {
+                    title = String(title.dropFirst(prefix.count))
+                        .trimmingCharacters(in: .whitespaces)
+                    break
+                }
+            }
+            return title.isEmpty ? nil : title
+        }
+        return nil
+    }
+
+    // MARK: - Pipeline indicator
+
+    /// True when this view should render the pipeline strip — either because
+    /// the controller is actively post-processing *this* meeting, or because
+    /// the user has just kicked off a manual re-run.
+    private var pipelineActive: Bool {
+        if meetingController.processingMeetingID == meeting.id,
+           meetingController.processingPhase != nil { return true }
+        return retranscribing || cleaning || diarizing || summarizing
+    }
+
+    /// Synthesizes the four-step pipeline state from the active controller
+    /// phase (when post-processing this meeting) and from the local manual
+    /// re-run flags. Runs left-to-right: a step is "done" only if there's
+    /// a persisted artifact for it.
+    private var pipelineSteps: [MeetingPipelineProgress.Step] {
+        let activePhase: MeetingProcessingPhase? =
+            (meetingController.processingMeetingID == meeting.id)
+                ? meetingController.processingPhase
+                : nil
+
+        func stepStatus(for phase: MeetingProcessingPhase,
+                         manual: Bool,
+                         done: Bool) -> MeetingPipelineProgress.StepStatus {
+            if activePhase == phase || manual { return .running }
+            if done { return .done }
+            return .pending
+        }
+
+        // Only the auto-run path reports a meaningful fraction; manual
+        // re-transcribes flow through retranscribeProgress instead.
+        let transcribeFraction: Double? =
+            (activePhase == .transcribing)
+                ? meetingController.transcribeProgress
+                : (retranscribing ? retranscribeProgress : nil)
+
+        return [
+            .init(id: .transcribing,
+                  label: "Transcribe",
+                  icon: MeetingProcessingPhase.transcribing.iconName,
+                  status: stepStatus(for: .transcribing,
+                                      manual: retranscribing,
+                                      done: transcribeDone),
+                  fraction: transcribeFraction),
+            .init(id: .cleaning,
+                  label: "Clean",
+                  icon: MeetingProcessingPhase.cleaning.iconName,
+                  status: stepStatus(for: .cleaning,
+                                      manual: cleaning,
+                                      done: cleanDone)),
+            .init(id: .diarizing,
+                  label: "Diarize",
+                  icon: MeetingProcessingPhase.diarizing.iconName,
+                  status: stepStatus(for: .diarizing,
+                                      manual: diarizing,
+                                      done: diarizeDone)),
+            .init(id: .summarizing,
+                  label: "Summarize",
+                  icon: MeetingProcessingPhase.summarizing.iconName,
+                  status: stepStatus(for: .summarizing,
+                                      manual: summarizing,
+                                      done: summarizeDone))
+        ]
+    }
+
+    private var pipelineElapsed: TimeInterval? {
+        guard let start = pipelineStartedAt, pipelineActive else { return nil }
+        return Date().timeIntervalSince(start)
+    }
+
+    /// True when the title still matches the auto-generated default — used
+    /// to decide whether to auto-apply the summary-derived title after a
+    /// successful summarize.
+    private func titleLooksAutogenerated() -> Bool {
+        let t = meeting.title.trimmingCharacters(in: .whitespaces)
+        if t.isEmpty || t == "Untitled" { return true }
+        // Default format from MeetingController: "Meeting <HH:MM>" or "Meeting <slug>".
+        return t.hasPrefix("Meeting ")
+    }
+
+    /// Called from the success branches of the summarize paths. Auto-applies
+    /// the summary-derived title when the meeting still has its default
+    /// placeholder name; otherwise leaves the user's chosen title alone.
+    /// Skips when the user is mid-edit on the title — replacing their draft
+    /// would silently discard typed text.
+    private func autoRenameFromSummaryIfDefault() {
+        guard !titleEditing else { return }
+        guard titleLooksAutogenerated() else { return }
+        runRenameFromSummary()
     }
 
     // MARK: - Copy MD
@@ -1141,6 +1497,7 @@ struct MeetingDetailView: View {
                 DebugLog.shared.log(icon: "📝", label: "Pack summarize done",
                                     value: "type=\(s.meetingType ?? "?") · \(resolved.modelID)")
                 flashDone("Summary")
+                autoRenameFromSummaryIfDefault()
             } catch {
                 summaryError = error.localizedDescription
                 DebugLog.shared.log(icon: "📝", label: "Pack summarize failed",
@@ -1173,6 +1530,7 @@ struct MeetingDetailView: View {
                 try store.writeSummary(s, for: meeting)
                 summary = s
                 flashDone("Summary")
+                autoRenameFromSummaryIfDefault()
             } catch {
                 summaryError = error.localizedDescription
                 DebugLog.shared.log(icon: "📝", label: "Manual summarize failed",

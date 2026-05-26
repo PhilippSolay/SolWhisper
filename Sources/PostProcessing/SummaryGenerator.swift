@@ -51,11 +51,14 @@ struct SummaryGenerator {
                   pack: SkillPack,
                   meetingType: String?) async throws -> Summary {
         let transcript = renderTranscriptForLLM(segments)
+        let calendarAttendees = await CalendarIntegration.shared.attendeeNames(forMeeting: meeting)
         let (system, user) = pack.renderPrompt(
             meetingType: meetingType,
             transcript: transcript,
             participants: meeting.participants,
-            context: meeting.context
+            context: meeting.context,
+            calendarEventTitle: meeting.calendarEventTitle,
+            calendarAttendees: calendarAttendees
         )
 
         let markdown = try await client.complete(

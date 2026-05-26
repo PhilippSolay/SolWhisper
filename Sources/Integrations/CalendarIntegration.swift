@@ -119,6 +119,28 @@ final class CalendarIntegration: ObservableObject {
         return Array(out).sorted()
     }
 
+    /// Attendee names for the meeting's linked event. Looks up the event by
+    /// stored `calendarEventID` first (canonical), then falls back to
+    /// `bestMatch(for:)` if no link is stored. Returns `[]` when calendar
+    /// access isn't granted or no match is found.
+    func attendeeNames(forMeeting meeting: Meeting) -> [String] {
+        let granted: Bool
+        if #available(macOS 14.0, *) {
+            granted = authStatus == .fullAccess
+        } else {
+            granted = authStatus == .authorized
+        }
+        guard granted else { return [] }
+        if let id = meeting.calendarEventID,
+           let event = store.event(withIdentifier: id) {
+            return attendeeNames(for: event)
+        }
+        if let event = bestMatch(for: meeting) {
+            return attendeeNames(for: event)
+        }
+        return []
+    }
+
     private func overlap(_ event: EKEvent, mStart: Date, mEnd: Date) -> TimeInterval {
         let s = max(event.startDate, mStart)
         let e = min(event.endDate, mEnd)

@@ -4,6 +4,7 @@ struct TranscriptsRootView: View {
 
     @ObservedObject var store: MeetingStore
     let onUpload: () -> Void
+    @ObservedObject var selectionModel: TranscriptsSelection
 
     enum Tab: String, Hashable, CaseIterable, Identifiable {
         case meetings = "Meetings"
@@ -11,7 +12,6 @@ struct TranscriptsRootView: View {
         var id: String { rawValue }
     }
 
-    @State private var selection: UUID?
     @State private var tab: Tab = .meetings
     @State private var searchVisible: Bool = false
 
@@ -46,7 +46,7 @@ struct TranscriptsRootView: View {
                 switch tab {
                 case .meetings:
                     MeetingListView(store: store,
-                                    selection: $selection,
+                                    selection: $selectionModel.selection,
                                     onUpload: onUpload,
                                     searchVisible: $searchVisible)
                 case .history:
@@ -57,7 +57,7 @@ struct TranscriptsRootView: View {
         } detail: {
             switch tab {
             case .meetings:
-                if let id = selection,
+                if let id = selectionModel.selection,
                    let meeting = store.meetings.first(where: { $0.id == id }) {
                     // Force a fresh view identity per meeting. Without this,
                     // NavigationSplitView reuses the same MeetingDetailView
@@ -67,7 +67,7 @@ struct TranscriptsRootView: View {
                     MeetingDetailView(
                         meeting: meeting,
                         store: store,
-                        onDeleted: { selection = nil }
+                        onDeleted: { selectionModel.selection = nil }
                     )
                     .id(meeting.id)
                 } else {

@@ -36,6 +36,38 @@ final class MeetingController: ObservableObject {
     @Published private(set) var spectrumBins: [Float] = [Float](repeating: 0, count: AudioEngine.fftBinCount)
     @Published private(set) var deviceHealth: DeviceMonitor.Health = .healthy(deviceName: "Built-in")
 
+    /// Which post-processing phase is currently running for which meeting.
+    /// Drives the multi-step pipeline indicator in the meeting detail view
+    /// and the AppDelegate's "open transcripts window when post-processing
+    /// kicks off" handoff. Nil between recordings.
+    @Published private(set) var processingPhase: MeetingProcessingPhase? = nil
+    @Published private(set) var processingMeetingID: UUID? = nil
+
+    /// Fires when post-processing transitions from idle → stitching (first
+    /// real work after recording stops). AppDelegate uses this to swap the
+    /// pill for the Transcripts window with the new meeting selected.
+    var onProcessingStarted: ((UUID) -> Void)?
+
+    /// Fraction (0...1) of the mic-channel transcribe pass during
+    /// post-processing. Nil when transcribe isn't running. The pipeline
+    /// indicator averages this with `transcribeSystemProgress` to show a
+    /// single moving bar during the transcribe phase.
+    @Published private(set) var transcribeMicProgress: Double? = nil
+    /// Same for the system-audio channel.
+    @Published private(set) var transcribeSystemProgress: Double? = nil
+
+    /// Combined 0…1 transcribe progress (50/50 weighted average of mic +
+    /// system) used by the pipeline indicator. Nil when neither channel is
+    /// actively reporting.
+    var transcribeProgress: Double? {
+        switch (transcribeMicProgress, transcribeSystemProgress) {
+        case (nil, nil): return nil
+        case (let m?, nil): return m
+        case (nil, let s?): return s
+        case (let m?, let s?): return (m + s) / 2
+        }
+    }
+
     var isRecording: Bool {
         switch state {
         case .recording, .paused: return true
@@ -355,45 +387,80 @@ final class MeetingController: ObservableObject {
         let micOutURL = folder.appendingPathComponent("audio_mic.wav")
         let systemOutURL = folder.appendingPathComponent("audio_system.wav")
         let mixedOutURL = folder.appendingPathComponent("audio.wav")
+        let pipelineStart = Date()
+
+        processingMeetingID = meeting.id
+        setPhase(.stitching, for: meeting)
+        onProcessingStarted?(meeting.id)
+
+        // Belt-and-braces cleanup: if any future edit between here and the
+        // end of the function escapes via `throw` or `return`, the controller
+        // would otherwise be left with phase publishers set forever (the
+        // pipeline indicator in the detail view would spin indefinitely).
+        // Today every error path catches in-place, but a defer survives
+        // refactors. Keep state reset paired with phase reset.
+        let completedMeetingID = meeting.id
+        defer {
+            processingPhase = nil
+            processingMeetingID = nil
+            if case .idle = state {} else { state = .idle }
+            self.meeting = nil
+            onProcessed?(completedMeetingID)
+        }
 
         do {
+            let stitchStart = Date()
             try await stitchChunks(in: chunksDir, prefix: "mic", to: micOutURL)
             try await stitchChunks(in: chunksDir, prefix: "sys", to: systemOutURL)
             try mixToCombined(mic: micOutURL, system: systemOutURL, output: mixedOutURL)
             // Remove the chunk directory now that we have the stitched files.
             try? FileManager.default.removeItem(at: chunksDir)
+            logPhaseElapsed("Stitch", since: stitchStart)
         } catch {
             DebugLog.shared.log(icon: "🎬", label: "Stitch failed",
                                 value: "\(error)", ok: false)
             // Don't bail — try transcription on whatever made it to the stitched outputs.
         }
 
-        // Transcribe both channels separately so we can label segments.
-        var allSegments: [TranscriptSegment] = []
-        if FileManager.default.fileExists(atPath: micOutURL.path) {
-            let segments = (try? await WhisperKitClient.fileTranscribe(
-                audioPath: micOutURL,
-                model: meetingsWhisperKitModel,
-                progress: nil
-            )) ?? []
-            allSegments.append(contentsOf: segments.map {
-                TranscriptSegment(id: $0.id, start: $0.start, end: $0.end,
-                                  text: $0.text, confidence: $0.confidence,
-                                  speaker: .me, cleanedText: $0.cleanedText)
-            })
-        }
-        if FileManager.default.fileExists(atPath: systemOutURL.path) {
-            let segments = (try? await WhisperKitClient.fileTranscribe(
-                audioPath: systemOutURL,
-                model: meetingsWhisperKitModel,
-                progress: nil
-            )) ?? []
-            allSegments.append(contentsOf: segments.map {
-                TranscriptSegment(id: $0.id, start: $0.start, end: $0.end,
-                                  text: $0.text, confidence: $0.confidence,
-                                  speaker: .other, cleanedText: $0.cleanedText)
-            })
-        }
+        // Transcribe both channels concurrently. The mic and system audio
+        // are independent files; running them in parallel roughly halves
+        // wall-clock time when both have content (the ANE is shared so
+        // speedup is usually 1.3–1.7x, not a perfect 2x). Channel-level
+        // progress fractions are weighted 50/50 and routed into the
+        // pipeline indicator via the shared `transcribePhaseProgress`
+        // helper below.
+        setPhase(.transcribing, for: meeting)
+        let transcribeStart = Date()
+        let model = meetingsWhisperKitModel
+        let micExists = FileManager.default.fileExists(atPath: micOutURL.path)
+        let sysExists = FileManager.default.fileExists(atPath: systemOutURL.path)
+
+        async let micResult: [TranscriptSegment] = micExists
+            ? Self.transcribeChannel(audioURL: micOutURL,
+                                      model: model,
+                                      speaker: SpeakerLabel.me,
+                                      onProgress: { [weak self] f in
+                                          Task { @MainActor in
+                                              self?.transcribeMicProgress = f
+                                          }
+                                      })
+            : []
+        async let sysResult: [TranscriptSegment] = sysExists
+            ? Self.transcribeChannel(audioURL: systemOutURL,
+                                      model: model,
+                                      speaker: SpeakerLabel.other,
+                                      onProgress: { [weak self] f in
+                                          Task { @MainActor in
+                                              self?.transcribeSystemProgress = f
+                                          }
+                                      })
+            : []
+
+        var allSegments = await micResult + sysResult
+        transcribeMicProgress = nil
+        transcribeSystemProgress = nil
+        logPhaseElapsed("Transcribe", since: transcribeStart,
+                        detail: "\(allSegments.count) segments · model=\(model) · parallel=\(micExists && sysExists)")
 
         // Sort by start time so [Me] / [Other] interleave naturally.
         allSegments.sort(by: { $0.start < $1.start })
@@ -406,11 +473,13 @@ final class MeetingController: ObservableObject {
         if autoClean,
            !allSegments.isEmpty,
            let resolved = LLMResolver.resolve(.cleanup) {
+            setPhase(.cleaning, for: meeting)
+            let cleanStart = Date()
             let pass = CleanupPass(client: resolved.client, model: resolved.modelID)
             do {
                 allSegments = try await pass.clean(allSegments, forceAllRulesIfEmpty: true)
-                DebugLog.shared.log(icon: "🧹", label: "Auto-clean done",
-                                    value: "\(allSegments.count) segments")
+                logPhaseElapsed("Auto-clean", since: cleanStart,
+                                detail: "\(allSegments.count) segments")
             } catch {
                 DebugLog.shared.log(icon: "🧹", label: "Auto-clean failed",
                                     value: error.localizedDescription, ok: false)
@@ -433,6 +502,15 @@ final class MeetingController: ObservableObject {
         updated.durationSeconds = audioDurationSeconds(micOutURL) ?? 0
         try? store.update(updated)
 
+        // Auto-link calendar event — if no event is linked yet and the
+        // best-match has reasonable confidence, attach it now so the user
+        // (and the summary prompt) immediately see the event title and
+        // attendee list. The match is purely time-overlap based — see
+        // CalendarIntegration.bestMatch.
+        if updated.calendarEventID == nil {
+            updated = await autoLinkCalendarEvent(meeting: updated)
+        }
+
         // Optional auto-diarization. Runs on the COMBINED audio (mixed
         // mic+system stream) so we get speaker letters that include both
         // sides of the call. Replaces the channel-based [Me]/[Other] tags
@@ -440,6 +518,8 @@ final class MeetingController: ObservableObject {
         let autoDiarize = UserDefaults.standard.bool(forKey: "meetingsAutoDiarize")
         let engineConfigured = !(UserDefaults.standard.string(forKey: "diarizationEngine") ?? "").isEmpty
         if autoDiarize, engineConfigured, !allSegments.isEmpty {
+            setPhase(.diarizing, for: meeting)
+            let diarizeStart = Date()
             let combinedURL = store.audioURL(for: meeting, ext: "wav")
             let docCopy = TranscriptDocument(meetingID: meeting.id, segments: allSegments)
             let outcome = await DiarizationRunner.run(
@@ -450,8 +530,8 @@ final class MeetingController: ObservableObject {
                 progress: { _ in }
             )
             if case .success(let tagged, let total, let engineID) = outcome {
-                DebugLog.shared.log(icon: "🎭", label: "Auto-diarize done",
-                                    value: "\(tagged)/\(total) tagged via \(engineID)")
+                logPhaseElapsed("Auto-diarize", since: diarizeStart,
+                                detail: "\(tagged)/\(total) tagged via \(engineID)")
                 // Reload from disk to get the persisted speakerID assignments.
                 if let reloaded = try? store.loadTranscript(for: updated) {
                     allSegments = reloaded.segments
@@ -469,26 +549,115 @@ final class MeetingController: ObservableObject {
         var summaryMarkdown = ""
         if UserDefaults.standard.bool(forKey: "meetingsAutoSummarize"),
            !allSegments.isEmpty {
+            setPhase(.summarizing, for: meeting)
+            let summaryStart = Date()
             summaryMarkdown = await runSummary(meeting: updated, segments: allSegments)
+            logPhaseElapsed("Auto-summarize", since: summaryStart,
+                            detail: "\(summaryMarkdown.count) chars")
         }
 
         // Sprint 6 — optional integrations fan-out.
         if UserDefaults.standard.bool(forKey: "meetingsAutoIntegrate") {
+            setPhase(.integrating, for: meeting)
+            let integrateStart = Date()
             let transcriptMD = renderMarkdown(document, title: updated.title)
             await fanOutToIntegrations(meeting: updated,
                                         transcriptMarkdown: transcriptMD,
                                         summaryMarkdown: summaryMarkdown)
+            logPhaseElapsed("Integrations fan-out", since: integrateStart)
         }
 
         store.appendSessionLog(updated,
                                "Meeting processing complete — \(allSegments.count) segments")
 
         DebugLog.shared.log(icon: "🎬", label: "Meeting processing done",
-                            value: "\(meeting.folderName) · \(allSegments.count) segments")
+                            value: "\(meeting.folderName) · \(allSegments.count) segments · total \(Self.elapsedString(since: pipelineStart))")
+        // Cleanup happens in the function-level defer above.
+    }
 
-        state = .idle
-        self.meeting = nil
-        onProcessed?(meeting.id)
+    // MARK: - Channel transcribe helper
+
+    /// Transcribes one channel (mic or system) and stamps the speaker label
+    /// onto each segment. Static + nonisolated so the two channels can run
+    /// concurrently via `async let` without serializing through MainActor.
+    /// Failures swallow to an empty array — the meeting still ships with
+    /// whatever the other channel produced.
+    nonisolated private static func transcribeChannel(
+        audioURL: URL,
+        model: String,
+        speaker: SpeakerLabel,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async -> [TranscriptSegment] {
+        let segments = (try? await WhisperKitClient.fileTranscribe(
+            audioPath: audioURL,
+            model: model,
+            progress: onProgress
+        )) ?? []
+        return segments.map {
+            TranscriptSegment(id: $0.id, start: $0.start, end: $0.end,
+                              text: $0.text, confidence: $0.confidence,
+                              speaker: speaker, cleanedText: $0.cleanedText)
+        }
+    }
+
+    // MARK: - Phase tracking
+
+    private func setPhase(_ phase: MeetingProcessingPhase, for meeting: Meeting) {
+        processingPhase = phase
+        DebugLog.shared.log(icon: "🎬", label: "Phase",
+                            value: "\(phase.rawValue) · \(meeting.folderName)")
+    }
+
+    /// Pretty-prints elapsed time to the debug log for the just-finished
+    /// phase. Used by every step of `runPostProcessing` to make slow phases
+    /// instantly visible in the Debug Log window. Resolves the user's
+    /// complaint that "Transcribe took super long" by giving them a number
+    /// to look at.
+    private func logPhaseElapsed(_ name: String, since: Date, detail: String? = nil) {
+        let value = detail.map { "\($0) · \(Self.elapsedString(since: since))" }
+                          ?? Self.elapsedString(since: since)
+        DebugLog.shared.log(icon: "⏱", label: "\(name) done", value: value)
+    }
+
+    nonisolated static func elapsedString(since start: Date) -> String {
+        let s = Date().timeIntervalSince(start)
+        if s < 1 { return String(format: "%.0fms", s * 1000) }
+        if s < 60 { return String(format: "%.1fs", s) }
+        let m = Int(s) / 60
+        let r = Int(s) % 60
+        return "\(m)m\(r)s"
+    }
+
+    // MARK: - Calendar auto-link
+
+    private func autoLinkCalendarEvent(meeting: Meeting) async -> Meeting {
+        let calendar = CalendarIntegration.shared
+        let granted: Bool
+        if #available(macOS 14.0, *) {
+            granted = calendar.authStatus == .fullAccess
+        } else {
+            granted = calendar.authStatus == .authorized
+        }
+        guard granted else { return meeting }
+        guard let event = calendar.bestMatch(for: meeting),
+              let title = event.title, !title.isEmpty,
+              let eventID = event.eventIdentifier else {
+            return meeting
+        }
+        var updated = meeting
+        updated.calendarEventTitle = title
+        updated.calendarEventID = eventID
+        let attendees = calendar.attendeeNames(for: event)
+        var existing = Set(updated.participants.map { $0.lowercased() })
+        for name in attendees where !existing.contains(name.lowercased()) {
+            updated.participants.append(name)
+            existing.insert(name.lowercased())
+        }
+        updated.updatedAt = Date()
+        try? store.update(updated)
+        DebugLog.shared.log(icon: "📅", label: "Calendar auto-linked",
+                            value: "\(title) · \(attendees.count) attendees")
+        return updated
     }
 
     /// Picks the configured skill + LLM, runs the summary, persists it.
@@ -545,64 +714,18 @@ final class MeetingController: ObservableObject {
     }
 
     /// Fires Hermes + Obsidian + (future) generic webhooks. Failures log
-    /// but don't block other integrations.
+    /// but don't block other integrations. Thin wrapper over the shared
+    /// `IntegrationFanout` helper so the on-demand button in the detail
+    /// view and the auto-fire path stay in lockstep.
     private func fanOutToIntegrations(meeting: Meeting,
                                        transcriptMarkdown: String,
                                        summaryMarkdown: String) async {
-        if HermesIntegration.isEnabled {
-            do {
-                let status = try await HermesIntegration.send(
-                    meeting: meeting,
-                    transcriptMarkdown: transcriptMarkdown,
-                    summaryMarkdown: summaryMarkdown
-                )
-                DebugLog.shared.log(icon: "🌐", label: "Hermes sent",
-                                    value: "HTTP \(status)", ok: status < 400)
-            } catch {
-                DebugLog.shared.log(icon: "🌐", label: "Hermes failed",
-                                    value: "\(error)", ok: false)
-            }
-        }
-        if ObsidianIntegration.isEnabled {
-            do {
-                let url = try ObsidianIntegration.write(
-                    meeting: meeting,
-                    transcriptMarkdown: transcriptMarkdown,
-                    summaryMarkdown: summaryMarkdown,
-                    audioFileURL: store.audioFileURL(for: meeting)
-                )
-                DebugLog.shared.log(icon: "📓", label: "Obsidian written",
-                                    value: url?.lastPathComponent ?? "no path")
-            } catch {
-                DebugLog.shared.log(icon: "📓", label: "Obsidian failed",
-                                    value: "\(error)", ok: false)
-            }
-        }
-
-        // Custom webhooks (Sprint 9 generic editor). Render the user's Mustache
-        // template with meeting + transcript + summary, POST with optional HMAC.
-        let values = MustacheRenderer.values(
-            for: meeting,
+        _ = await IntegrationFanout.send(
+            meeting: meeting,
             transcriptMarkdown: transcriptMarkdown,
-            summaryMarkdown: summaryMarkdown
+            summaryMarkdown: summaryMarkdown,
+            audioFileURL: store.audioFileURL(for: meeting)
         )
-        for hook in CustomWebhookStore.shared.enabled {
-            guard let url = URL(string: hook.urlString) else { continue }
-            let body = MustacheRenderer.render(hook.payloadTemplate, values: values)
-            let secret = (try? KeychainStore.string(forKey: hook.keychainKey)) ?? nil
-            let webhook = OutboundWebhook(url: url,
-                                           secret: secret,
-                                           extraHeaders: hook.headers)
-            do {
-                let status = try await webhook.post(body: Data(body.utf8),
-                                                     contentType: hook.contentType)
-                DebugLog.shared.log(icon: "🪝", label: "Webhook \"\(hook.name)\" sent",
-                                    value: "HTTP \(status)", ok: status < 400)
-            } catch {
-                DebugLog.shared.log(icon: "🪝", label: "Webhook \"\(hook.name)\" failed",
-                                    value: "\(error)", ok: false)
-            }
-        }
     }
 
     // MARK: - Stitching
