@@ -305,18 +305,26 @@ final class WhisperKitClient {
                                 value: "\(results.count) result(s) in \(txMs)ms")
         }
 
-        guard let first = results.first else {
+        guard !results.isEmpty else {
             throw WhisperKitClientError.noResults
         }
 
-        return first.segments.map { wk in
-            TranscriptSegment(
-                start: TimeInterval(wk.start),
-                end: TimeInterval(wk.end),
-                text: stripSpecialTokens(wk.text),
-                confidence: nil,
-                speaker: .unknown
-            )
+        // With VAD chunking, WhisperKit returns one `TranscriptionResult` per
+        // chunk — for a 70-min file that's dozens of results. The old code
+        // took `results.first` only and silently dropped chunks 2…N, losing
+        // most of the transcript. Flatten every result's segments and rely
+        // on WhisperKit's own `updateSeekOffsetsForResults` to have already
+        // shifted each segment's timestamps into the source-file timeline.
+        return results.flatMap { result in
+            result.segments.map { wk in
+                TranscriptSegment(
+                    start: TimeInterval(wk.start),
+                    end: TimeInterval(wk.end),
+                    text: stripSpecialTokens(wk.text),
+                    confidence: nil,
+                    speaker: .unknown
+                )
+            }
         }
     }
 

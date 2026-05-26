@@ -639,7 +639,16 @@ final class MeetingController: ObservableObject {
             granted = calendar.authStatus == .authorized
         }
         guard granted else { return meeting }
-        guard let event = calendar.bestMatch(for: meeting),
+        // Require positive time overlap to auto-link. Without this guard
+        // `bestMatch` happily returns an event whose only relationship to
+        // the recording is being inside the ±15 min search window — e.g.
+        // the call right before the one you recorded. That event's title
+        // and attendees would be written to disk and into the summary
+        // prompt with no user confirmation. Require at least 60s of
+        // overlap; below that we leave it alone and let the user link
+        // manually from the detail view.
+        guard let (event, overlap) = calendar.bestOverlap(for: meeting),
+              overlap >= 60,
               let title = event.title, !title.isEmpty,
               let eventID = event.eventIdentifier else {
             return meeting
@@ -656,7 +665,7 @@ final class MeetingController: ObservableObject {
         updated.updatedAt = Date()
         try? store.update(updated)
         DebugLog.shared.log(icon: "📅", label: "Calendar auto-linked",
-                            value: "\(title) · \(attendees.count) attendees")
+                            value: "\(title) · overlap=\(Int(overlap))s · \(attendees.count) attendees")
         return updated
     }
 

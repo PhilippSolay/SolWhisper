@@ -85,14 +85,26 @@ final class CalendarIntegration: ObservableObject {
 
     /// Picks the single calendar event that best overlaps the meeting's
     /// recorded window. Heuristic: most overlap with the meeting span.
+    /// **Note:** this returns the event with the *most* overlap even when
+    /// that overlap is zero (e.g. a nearby-but-non-overlapping event from
+    /// the ±15 min search window). Callers that want a confident match —
+    /// like the post-recording auto-link — should use `bestOverlap(for:)`
+    /// and gate on a minimum overlap threshold.
     func bestMatch(for meeting: Meeting) -> EKEvent? {
+        bestOverlap(for: meeting)?.event
+    }
+
+    /// Same as `bestMatch` but returns the overlap-in-seconds alongside the
+    /// event so callers can refuse a 0-second "best" match. Used by the
+    /// post-recording auto-link guard.
+    func bestOverlap(for meeting: Meeting) -> (event: EKEvent, overlap: TimeInterval)? {
         let candidates = eventsAroundMeeting(meeting)
         guard !candidates.isEmpty else { return nil }
         let mStart = meeting.createdAt
         let mEnd   = meeting.createdAt.addingTimeInterval(max(meeting.durationSeconds, 1))
-        return candidates.max(by: { a, b in
-            overlap(a, mStart: mStart, mEnd: mEnd) < overlap(b, mStart: mStart, mEnd: mEnd)
-        })
+        let scored = candidates.map { ($0, overlap($0, mStart: mStart, mEnd: mEnd)) }
+        guard let winner = scored.max(by: { $0.1 < $1.1 }) else { return nil }
+        return (winner.0, winner.1)
     }
 
     /// Pulls human-readable names from an event: organizer + attendees.
