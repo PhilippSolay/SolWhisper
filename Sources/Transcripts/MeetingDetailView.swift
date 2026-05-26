@@ -25,6 +25,11 @@ struct MeetingDetailView: View {
     @State private var diarizing: Bool = false
     @State private var diarizeError: String?
     @State private var diarizeProgress: Double?
+    /// Handle to the in-flight diarize task. Stored so the Cancel button in
+    /// the progress strip can call `.cancel()` on it. The streaming
+    /// resampler honours cooperative cancellation, so this stops a stuck
+    /// run cleanly instead of leaving it spinning in the background.
+    @State private var diarizeTask: Task<Void, Never>?
     @State private var suggesting: Bool = false
     @State private var suggestError: String?
 
@@ -249,7 +254,19 @@ struct MeetingDetailView: View {
         if retranscribing {
             operationProgressRow(name: "Re-transcribing", progress: retranscribeProgress)
         } else if diarizing {
-            operationProgressRow(name: "Diarizing", progress: diarizeProgress)
+            HStack(spacing: 10) {
+                operationProgressRow(name: "Diarizing", progress: diarizeProgress)
+                Button {
+                    diarizeTask?.cancel()
+                } label: {
+                    Label("Cancel", systemImage: "stop.circle")
+                        .labelStyle(.titleAndIcon)
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.borderless)
+                .foregroundColor(.secondary)
+                .help("Cancel diarization. The in-flight run will stop at the next safe point.")
+            }
         } else if cleaning {
             operationProgressRow(name: "Cleaning", progress: nil)
         } else if summarizing {
@@ -859,8 +876,12 @@ struct MeetingDetailView: View {
         diarizing = true
         diarizeError = nil
         diarizeProgress = 0
-        Task { @MainActor in
-            defer { diarizing = false; diarizeProgress = nil }
+        let task = Task { @MainActor in
+            defer {
+                diarizing = false
+                diarizeProgress = nil
+                diarizeTask = nil
+            }
             guard let document = transcript else {
                 diarizeError = "No transcript loaded yet."
                 return
@@ -887,6 +908,8 @@ struct MeetingDetailView: View {
                 diarizeError = "No diarization engine configured. Pick one in Settings → Models → Diarization."
             case .failed(let msg):
                 diarizeError = msg
+            case .cancelled:
+                diarizeError = "Diarization cancelled."
             case .success(let tagged, let total, let engineID):
                 DebugLog.shared.log(icon: "🎭", label: "Diarize done",
                                     value: "\(tagged)/\(total) segments tagged · engine=\(engineID)")
@@ -897,6 +920,7 @@ struct MeetingDetailView: View {
                 flashDone("Diarize")
             }
         }
+        diarizeTask = task
     }
 
     private func runRetranscribe() {
