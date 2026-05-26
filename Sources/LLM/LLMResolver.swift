@@ -19,9 +19,10 @@ import Foundation
 enum LLMResolver {
 
     enum Role: String {
-        case dictation = "dictationLLMProvider"
-        case cleanup   = "cleanupLLMProvider"
-        case summary   = "summaryLLMProvider"
+        case dictation   = "dictationLLMProvider"
+        case cleanup     = "cleanupLLMProvider"
+        case summary     = "summaryLLMProvider"
+        case translation = "translationLLMProvider"
     }
 
     struct Resolved {

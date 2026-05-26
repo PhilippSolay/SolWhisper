@@ -16,7 +16,16 @@ CONFIG_CAP="$(echo "$CONFIG" | tr '[:lower:]' '[:upper:]' | cut -c1)$(echo "$CON
 APP_NAME="SolWhisper"
 BUNDLE_ID="cloud.solay.SolWhisper"
 
-APP=$(find ~/Library/Developer/Xcode/DerivedData/${APP_NAME}-*/Build/Products/"$CONFIG_CAP" -name "$APP_NAME.app" -maxdepth 1 2>/dev/null | head -1)
+# Pick the most recently modified candidate when multiple DerivedData
+# directories exist (Xcode keeps stale ones around indefinitely; the
+# default `find ... | head -1` picks an alphabetical first match which
+# can deploy a build from months ago). `stat -f "%m %N"` prints epoch
+# mtime + path; `sort -nr` puts the newest first.
+APP=$(find ~/Library/Developer/Xcode/DerivedData/${APP_NAME}-*/Build/Products/"$CONFIG_CAP" -name "$APP_NAME.app" -maxdepth 1 2>/dev/null \
+        | xargs -I{} stat -f "%m {}" 2>/dev/null \
+        | sort -nr \
+        | head -1 \
+        | cut -d' ' -f2-)
 
 if [ -z "$APP" ]; then
     echo "✗ No $CONFIG_CAP build found. Run xcodebuild first."

@@ -78,6 +78,11 @@ class AudioEngine {
         engine.detach(mixer)
         converter = nil
         agcGain   = 1.0
+        // vDSP setup is a Core Foundation-managed handle — nilling the Swift
+        // var is not enough, the backing buffers need an explicit destroy
+        // call. WhisperKitClient + MeetingAudioEngine.SpectrumComputer do
+        // the same; missing this here leaked ~1 KB per recording session.
+        if let setup = fftSetup { vDSP_DFT_DestroySetup(setup) }
         fftSetup  = nil
         onLevelUpdate?(0)
         onSpectrumUpdate?([Float](repeating: 0, count: Self.fftBinCount))

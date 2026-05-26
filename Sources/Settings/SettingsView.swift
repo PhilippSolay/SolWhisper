@@ -10,6 +10,7 @@ enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
     case transcription = "STT Short"
     case meetings      = "STT Meetings"
     case ocr           = "Screen Capture"
+    case translate     = "Translate"
     case audio         = "Audio"
     case hotkey        = "Hotkey"
     case models        = "Models"
@@ -27,6 +28,7 @@ enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
         case .transcription: "waveform"
         case .meetings:      "person.2.wave.2"
         case .ocr:           "rectangle.dashed.and.paperclip"
+        case .translate:     "globe"
         case .audio:         "speaker.wave.3"
         case .hotkey:        "keyboard"
         case .models:        "brain"
@@ -59,6 +61,7 @@ struct SettingsView: View {
                 case .transcription: TranscriptionSettingsView()
                 case .meetings:      MeetingSettingsView()
                 case .ocr:           OCRSettingsView()
+                case .translate:     TranslateSettingsView()
                 case .audio:         AudioSettingsView()
                 case .hotkey:        HotkeySettingsView()
                 case .models:        ModelsSettingsView()
@@ -321,11 +324,15 @@ struct HotkeySettingsView: View {
     /// Transcripts window hotkey — global open.
     @AppStorage("transcriptsHotkeyKeyCode")      private var transcriptsHotkeyKeyCode      = 0
     @AppStorage("transcriptsHotkeyModifierMask") private var transcriptsHotkeyModifierMask = 0
+    /// Translate Snap hotkey — paired with the Translate-from-screen flow.
+    @AppStorage("translateHotkeyKeyCode")        private var translateHotkeyKeyCode        = 0
+    @AppStorage("translateHotkeyModifierMask")   private var translateHotkeyModifierMask   = 0
     @State private var isRecordingHotkey         = false
     @State private var isRecordingPauseHotkey    = false
     @State private var isRecordingSnipHotkey     = false
     @State private var isRecordingMeetingHotkey  = false
     @State private var isRecordingTranscriptsHotkey = false
+    @State private var isRecordingTranslateHotkey   = false
 
     var body: some View {
         Form {
@@ -364,6 +371,13 @@ struct HotkeySettingsView: View {
                     keyCode:      $snipHotkeyKeyCode,
                     modifierMask: $snipHotkeyModifierMask,
                     isRecording:  $isRecordingSnipHotkey
+                )
+                HotkeyRow(
+                    title: "Translate Snap",
+                    subtitle: "Drag a region; translated text goes to clipboard",
+                    keyCode:      $translateHotkeyKeyCode,
+                    modifierMask: $translateHotkeyModifierMask,
+                    isRecording:  $isRecordingTranslateHotkey
                 )
             } header: {
                 Text("Keyboard Shortcuts")

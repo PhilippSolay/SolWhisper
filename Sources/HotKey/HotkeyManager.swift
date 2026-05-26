@@ -15,12 +15,15 @@ class HotkeyManager {
     /// Opens the Transcripts window (global; menu item shortcut only fires
     /// when the menu is visible).
     var onTranscriptsHotkeyPressed: (() -> Void)?
+    /// Triggers the screen-Translate flow (capture region → OCR → bubble).
+    var onTranslateHotkeyPressed: (() -> Void)?
 
     private var hotKeyRef:            EventHotKeyRef?
     private var pauseHotKeyRef:       EventHotKeyRef?
     private var snipHotKeyRef:        EventHotKeyRef?
     private var meetingHotKeyRef:     EventHotKeyRef?
     private var transcriptsHotKeyRef: EventHotKeyRef?
+    private var translateHotKeyRef:   EventHotKeyRef?
     private var eventHandlerRef:      EventHandlerRef?
     private var defaultsObserver: Any?
 
@@ -30,6 +33,7 @@ class HotkeyManager {
     private var lastSnipKey:        (Int, Int) = (0, 0)
     private var lastMeetingKey:     (Int, Int) = (0, 0)
     private var lastTranscriptsKey: (Int, Int) = (0, 0)
+    private var lastTranslateKey:   (Int, Int) = (0, 0)
 
     // MARK: - Start / Stop
 
@@ -53,6 +57,7 @@ class HotkeyManager {
         if let ref = snipHotKeyRef        { UnregisterEventHotKey(ref); snipHotKeyRef        = nil }
         if let ref = meetingHotKeyRef     { UnregisterEventHotKey(ref); meetingHotKeyRef     = nil }
         if let ref = transcriptsHotKeyRef { UnregisterEventHotKey(ref); transcriptsHotKeyRef = nil }
+        if let ref = translateHotKeyRef   { UnregisterEventHotKey(ref); translateHotKeyRef   = nil }
         if let ref = eventHandlerRef      { RemoveEventHandler(ref);     eventHandlerRef      = nil }
         if let obs = defaultsObserver      { NotificationCenter.default.removeObserver(obs) }
     }
@@ -92,6 +97,8 @@ class HotkeyManager {
                         mgr.onMeetingHotkeyPressed?()
                     } else if hkID.id == 5 {
                         mgr.onTranscriptsHotkeyPressed?()
+                    } else if hkID.id == 6 {
+                        mgr.onTranslateHotkeyPressed?()
                     }
                 }
                 return noErr
@@ -114,15 +121,19 @@ class HotkeyManager {
         let mmask = UserDefaults.standard.integer(forKey: "meetingHotkeyModifierMask")
         let tkc   = UserDefaults.standard.integer(forKey: "transcriptsHotkeyKeyCode")
         let tmask = UserDefaults.standard.integer(forKey: "transcriptsHotkeyModifierMask")
+        let xkc   = UserDefaults.standard.integer(forKey: "translateHotkeyKeyCode")
+        let xmask = UserDefaults.standard.integer(forKey: "translateHotkeyModifierMask")
 
         let rec  = (kc, mask)
         let pau  = (pkc, pmask)
         let snip = (skc, smask)
         let meet = (mkc, mmask)
         let trans = (tkc, tmask)
+        let xlate = (xkc, xmask)
         guard rec != lastRecordKey || pau != lastPauseKey
               || snip != lastSnipKey || meet != lastMeetingKey
-              || trans != lastTranscriptsKey else { return }
+              || trans != lastTranscriptsKey
+              || xlate != lastTranslateKey else { return }
         registerHotKeys()
     }
 
@@ -133,6 +144,7 @@ class HotkeyManager {
         if let ref = snipHotKeyRef        { UnregisterEventHotKey(ref); snipHotKeyRef        = nil }
         if let ref = meetingHotKeyRef     { UnregisterEventHotKey(ref); meetingHotKeyRef     = nil }
         if let ref = transcriptsHotKeyRef { UnregisterEventHotKey(ref); transcriptsHotKeyRef = nil }
+        if let ref = translateHotKeyRef   { UnregisterEventHotKey(ref); translateHotKeyRef   = nil }
 
         // Record hotkey
         let kc   = UserDefaults.standard.integer(forKey: "hotkeyKeyCode")
@@ -218,6 +230,25 @@ class HotkeyManager {
                 DebugLog.shared.log(icon: "⌨️",
                                     label: "Transcripts hotkey: keyCode=\(transKey) mods=\(transMod)",
                                     ok: terr == noErr)
+            }
+        }
+
+        // Translate hotkey — same shape as snip: ships unset, only registers
+        // when the user has explicitly picked one. Hotkey ID 6 is reserved
+        // for translate; matches `onTranslateHotkeyPressed`.
+        let xkc   = UserDefaults.standard.integer(forKey: "translateHotkeyKeyCode")
+        let xmask = UserDefaults.standard.integer(forKey: "translateHotkeyModifierMask")
+        lastTranslateKey = (xkc, xmask)
+        if xkc > 0 && xmask > 0 {
+            var xlateID = EventHotKeyID(signature: 0x5357_4853, id: 6)
+            let xlateKey = UInt32(xkc)
+            let xlateMod = carbonModifiers(xmask)
+            let xerr = RegisterEventHotKey(xlateKey, xlateMod, xlateID,
+                                            GetApplicationEventTarget(), 0, &translateHotKeyRef)
+            Task { @MainActor in
+                DebugLog.shared.log(icon: "⌨️",
+                                    label: "Translate hotkey: keyCode=\(xlateKey) mods=\(xlateMod)",
+                                    ok: xerr == noErr)
             }
         }
     }
