@@ -84,11 +84,18 @@ targets:
     preBuildScripts:
       - name: Bump Build Number
         script: |
+          # CFBundleVersion = minutes since the Unix epoch. Monotonic by
+          # wall-clock time and independent of accumulated local build count,
+          # so a release build can never fall behind a dev/test machine. The
+          # old CURRENT+1 scheme let local dev builds outrun the released
+          # build number, which made Sparkle report "you're up to date" even
+          # when a newer release existed. The committed value no longer
+          # matters — every build stamps "now" (~29.6M today, safely under
+          # the 2^31 version-component ceiling for millennia).
           PLIST="${PROJECT_DIR}/Resources/Info.plist"
-          CURRENT=$(/usr/libexec/PlistBuddy -c "Print CFBundleVersion" "$PLIST")
-          NEXT=$((CURRENT + 1))
+          NEXT=$(( $(date +%s) / 60 ))
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEXT" "$PLIST"
-          echo "Build number: $CURRENT → $NEXT"
+          echo "Build number (epoch-min): $NEXT"
         shell: /bin/bash
     postBuildScripts:
       - name: Copy MCP binary into bundle
