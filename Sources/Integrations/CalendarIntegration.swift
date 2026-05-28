@@ -85,14 +85,26 @@ final class CalendarIntegration: ObservableObject {
 
     /// Picks the single calendar event that best overlaps the meeting's
     /// recorded window. Heuristic: most overlap with the meeting span.
+    /// **Note:** this returns the event with the *most* overlap even when
+    /// that overlap is zero (e.g. a nearby-but-non-overlapping event from
+    /// the ±15 min search window). Callers that want a confident match —
+    /// like the post-recording auto-link — should use `bestOverlap(for:)`
+    /// and gate on a minimum overlap threshold.
     func bestMatch(for meeting: Meeting) -> EKEvent? {
+        bestOverlap(for: meeting)?.event
+    }
+
+    /// Same as `bestMatch` but returns the overlap-in-seconds alongside the
+    /// event so callers can refuse a 0-second "best" match. Used by the
+    /// post-recording auto-link guard.
+    func bestOverlap(for meeting: Meeting) -> (event: EKEvent, overlap: TimeInterval)? {
         let candidates = eventsAroundMeeting(meeting)
         guard !candidates.isEmpty else { return nil }
         let mStart = meeting.createdAt
         let mEnd   = meeting.createdAt.addingTimeInterval(max(meeting.durationSeconds, 1))
-        return candidates.max(by: { a, b in
-            overlap(a, mStart: mStart, mEnd: mEnd) < overlap(b, mStart: mStart, mEnd: mEnd)
-        })
+        let scored = candidates.map { ($0, overlap($0, mStart: mStart, mEnd: mEnd)) }
+        guard let winner = scored.max(by: { $0.1 < $1.1 }) else { return nil }
+        return (winner.0, winner.1)
     }
 
     /// Pulls human-readable names from an event: organizer + attendees.
@@ -117,6 +129,28 @@ final class CalendarIntegration: ObservableObject {
             }
         }
         return Array(out).sorted()
+    }
+
+    /// Attendee names for the meeting's linked event. Looks up the event by
+    /// stored `calendarEventID` first (canonical), then falls back to
+    /// `bestMatch(for:)` if no link is stored. Returns `[]` when calendar
+    /// access isn't granted or no match is found.
+    func attendeeNames(forMeeting meeting: Meeting) -> [String] {
+        let granted: Bool
+        if #available(macOS 14.0, *) {
+            granted = authStatus == .fullAccess
+        } else {
+            granted = authStatus == .authorized
+        }
+        guard granted else { return [] }
+        if let id = meeting.calendarEventID,
+           let event = store.event(withIdentifier: id) {
+            return attendeeNames(for: event)
+        }
+        if let event = bestMatch(for: meeting) {
+            return attendeeNames(for: event)
+        }
+        return []
     }
 
     private func overlap(_ event: EKEvent, mStart: Date, mEnd: Date) -> TimeInterval {

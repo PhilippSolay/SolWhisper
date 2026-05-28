@@ -30,6 +30,9 @@ packages:
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio.git
     from: 0.14.4
+  MarkdownUI:
+    url: https://github.com/gonzalezreal/swift-markdown-ui
+    from: 2.4.1
 
 targets:
   SolWhisper:
@@ -75,6 +78,8 @@ targets:
         product: WhisperKit
       - package: FluidAudio
         product: FluidAudio
+      - package: MarkdownUI
+        product: MarkdownUI
       - target: solwhisper-mcp
     preBuildScripts:
       - name: Bump Build Number

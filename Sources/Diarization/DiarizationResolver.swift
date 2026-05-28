@@ -48,6 +48,10 @@ enum DiarizationRunner {
         case success(taggedSegments: Int, totalSegments: Int, engineID: String)
         case noEngine
         case failed(String)
+        /// User (or caller) cancelled the in-flight run via `Task.cancel()`.
+        /// Surfaces separately from `.failed` so the UI can show a friendly
+        /// "Diarization cancelled." message instead of a generic error.
+        case cancelled
     }
 
     /// Diarizes the meeting's audio, maps speaker letters onto its
@@ -74,8 +78,10 @@ enum DiarizationRunner {
         guard let engine = resolved else { return .noEngine }
 
         do {
+            try Task.checkCancellation()
             let speakerSegs = try await engine.diarize(audioURL: audioURL,
                                                         progress: progress)
+            try Task.checkCancellation()
             DebugLog.shared.log(icon: "🎭", label: "Diarization",
                                 value: "\(resolvedID) returned \(speakerSegs.count) speaker segments")
 
@@ -114,7 +120,24 @@ enum DiarizationRunner {
             return .success(taggedSegments: taggedCount,
                             totalSegments: tagged.count,
                             engineID: resolvedID)
+        } catch is CancellationError {
+            DebugLog.shared.log(icon: "🎭", label: "Diarization cancelled",
+                                value: "user cancelled in-flight run")
+            return .cancelled
+        } catch StreamingAudioResampler.Error.cancelled {
+            DebugLog.shared.log(icon: "🎭", label: "Diarization cancelled",
+                                value: "resampler cancelled")
+            return .cancelled
         } catch {
+            // FluidAudio bridges resampler cancellation as a synthetic HTTP
+            // error with status 0 and a known body — recognize that too so
+            // the UI can render a clean "cancelled" message rather than
+            // "Diarization cancelled by user." as a generic failure.
+            if Task.isCancelled {
+                DebugLog.shared.log(icon: "🎭", label: "Diarization cancelled",
+                                    value: "task cancelled (\(error.localizedDescription))")
+                return .cancelled
+            }
             DebugLog.shared.log(icon: "🎭", label: "Diarization failed",
                                 value: error.localizedDescription, ok: false)
             return .failed(error.localizedDescription)

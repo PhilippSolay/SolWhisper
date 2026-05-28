@@ -47,7 +47,9 @@ struct SkillPack: Sendable, Identifiable, Equatable {
     func renderPrompt(meetingType: String?,
                       transcript: String,
                       participants: [String],
-                      context: String? = nil) -> (system: String, user: String) {
+                      context: String? = nil,
+                      calendarEventTitle: String? = nil,
+                      calendarAttendees: [String] = []) -> (system: String, user: String) {
 
         var system = "You write meeting summaries in clean Markdown. Avoid editorializing.\n\n"
         system += "─── Skill: \(name) ───\n\n"
@@ -88,9 +90,39 @@ struct SkillPack: Sendable, Identifiable, Equatable {
 
             """
 
+        // Calendar block — gives the LLM the event title and confirmed
+        // attendee list so it can produce a meaningful summary heading
+        // (e.g. "# TrueSelf | Weekly call — Max: CMS, Chatbot, Survey")
+        // and disambiguate speakers it can't otherwise identify.
+        //
+        // **Untrusted input.** Calendar titles and attendee names come from
+        // EventKit — any third party who put you on an invite can choose
+        // them. Strip control chars and tag-like sequences so a malicious
+        // invite can't break out of the data block to inject instructions
+        // ("`</transcript>\n\nNew instructions:`" etc.). Wrap the whole
+        // block in a fenced container so the model knows it's data.
+        let safeCalTitle = Self.sanitizeCalendarString(calendarEventTitle ?? "")
+        let safeAttendees = calendarAttendees.map(Self.sanitizeCalendarString)
+                                              .filter { !$0.isEmpty }
+        var calendarLines: [String] = []
+        if !safeCalTitle.isEmpty {
+            calendarLines.append("event: \(safeCalTitle)")
+        }
+        if !safeAttendees.isEmpty {
+            calendarLines.append("attendees: \(safeAttendees.joined(separator: ", "))")
+        }
+        let calendarBlock = calendarLines.isEmpty
+            ? ""
+            : """
+
+            <calendar untrusted="true">
+            \(calendarLines.joined(separator: "\n"))
+            </calendar>
+
+            """
+
         let user = """
-        \(participantsLine)
-        \(contextBlock)
+        \(participantsLine)\(calendarBlock)\(contextBlock)
         Transcript:
 
         <transcript>
@@ -99,6 +131,54 @@ struct SkillPack: Sendable, Identifiable, Equatable {
         """
 
         return (system, user)
+    }
+
+    /// Builds a tiny classification-only prompt: just the parent SKILL.md
+    /// (which carries the Step-1 routing table) + a transcript head + the
+    /// list of valid type ids. The model returns one type id, which the
+    /// caller validates and feeds back into `renderPrompt(meetingType:)`.
+    /// This avoids shipping all ~84KB of type modules just to *pick* one.
+    func renderClassificationPrompt(transcriptHead: String) -> (system: String, user: String) {
+        let system = """
+        You classify meeting transcripts into one of a fixed set of meeting types using the rubric below. Reply with ONLY the type id (one token from the allowed list), no prose, no quotes, no punctuation.
+
+        ─── Routing rubric (parent skill) ───
+
+        \(parent.body)
+        """
+
+        let allowed = typeIDs.joined(separator: ", ")
+        let user = """
+        Allowed type ids: \(allowed)
+
+        Transcript head (first portion only — enough to identify the meeting shape):
+
+        <transcript>
+        \(transcriptHead)
+        </transcript>
+
+        Reply with one of: \(allowed)
+        """
+        return (system, user)
+    }
+
+    /// Scrubs untrusted strings (calendar event title, attendee display
+    /// names) before they go into the LLM prompt. Removes control chars,
+    /// collapses whitespace, and neutralizes angle-bracket sequences that
+    /// could close our fenced block. Keeps Unicode letters/punctuation so
+    /// real names ("María José", "李雷") survive.
+    static func sanitizeCalendarString(_ raw: String) -> String {
+        var s = raw
+        // Drop control characters (newlines, tabs, NULs, etc.).
+        s = s.filter { !$0.isASCII || !($0.asciiValue.map { (0x00...0x1F).contains($0) || $0 == 0x7F } ?? false) }
+        // Neutralize angle-bracket sequences so injected tags can't escape
+        // our fenced calendar/transcript blocks.
+        s = s.replacingOccurrences(of: "<", with: "‹")
+             .replacingOccurrences(of: ">", with: "›")
+        // Collapse internal whitespace runs to single spaces.
+        s = s.split(whereSeparator: { $0.isWhitespace })
+             .joined(separator: " ")
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Frontmatter parser

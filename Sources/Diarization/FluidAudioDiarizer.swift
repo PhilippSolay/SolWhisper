@@ -32,15 +32,38 @@ struct FluidAudioDiarizer: DiarizationEngine {
     @available(macOS 14.0, *)
     private func runFluidAudio(audioURL: URL,
                                 progress: @MainActor @escaping (Double) -> Void) async throws -> [SpeakerSegment] {
-        // 1. Resample to 16 kHz mono Float (FluidAudio's required input).
-        await MainActor.run { progress(0.05) }
+        // Phase budget for the progress bar:
+        //   resample (0…0.40) — streaming, big % so long files have real motion
+        //   model load (0.40…0.55)
+        //   diarize (0.55…0.95)
+        //   normalize (0.95…1.0)
+        //
+        // The previous implementation used FluidAudio's `AudioConverter()`,
+        // which on long files would block synchronously inside step 1 for
+        // 15+ minutes with no observable progress. The streaming pipeline
+        // below resamples in 8s windows, reports fine-grained progress, and
+        // honours Task cancellation so the user can bail out.
+        await MainActor.run { progress(0.0) }
         let samples: [Float]
         do {
-            samples = try AudioConverter().resampleAudioFile(audioURL)
+            samples = try await StreamingAudioResampler.resampleToMonoFloat32(
+                url: audioURL,
+                progress: { fraction in
+                    Task { @MainActor in progress(min(0.40, 0.40 * fraction)) }
+                }
+            )
+        } catch is CancellationError {
+            throw DiarizationError.http(status: 0, body: "Diarization cancelled by user.")
+        } catch StreamingAudioResampler.Error.cancelled {
+            throw DiarizationError.http(status: 0, body: "Diarization cancelled by user.")
         } catch {
+            await DebugLog.shared.log(icon: "🎭", label: "Resample failed",
+                                       value: "\(error)", ok: false)
             throw DiarizationError.audioReadFailed(audioURL)
         }
-        await MainActor.run { progress(0.20) }
+        await DebugLog.shared.log(icon: "🎭", label: "Resample done",
+                                   value: "\(samples.count) samples @ 16kHz")
+        await MainActor.run { progress(0.40) }
 
         // 2. Download (or load cached) CoreML models. First call after
         // install pulls ~30-50 MB; subsequent calls are instant.
@@ -52,12 +75,12 @@ struct FluidAudioDiarizer: DiarizationEngine {
                 "Couldn't load FluidAudio models: \(error.localizedDescription)"
             )
         }
-        await MainActor.run { progress(0.40) }
+        await MainActor.run { progress(0.55) }
 
         // 3. Initialize the manager and run.
         let manager = DiarizerManager(config: .default)
         manager.initialize(models: consume models)
-        await MainActor.run { progress(0.55) }
+        await MainActor.run { progress(0.60) }
 
         let result: DiarizationResult
         do {

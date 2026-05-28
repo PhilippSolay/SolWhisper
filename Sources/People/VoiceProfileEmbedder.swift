@@ -54,9 +54,20 @@ enum VoiceProfileEmbedder {
 
         // 2. Load + resample the full audio file once, then slice in
         // sample space. Stop accumulating once we have ~30s of audio.
+        // We use the streaming resampler here (chunked AVAudioConverter,
+        // reports progress, honours cancellation). The previous direct
+        // call to FluidAudio's `AudioConverter().resampleAudioFile(...)`
+        // silently hung on long recordings, which is why no profile in
+        // the user's `~/Library/Application Support/SolWhisper/Voices/`
+        // folder ever had an `embedding` field — capture started, the
+        // file load deadlocked, and the catch in MeetingDetailView only
+        // logged a line nobody saw.
         let samples: [Float]
         do {
-            samples = try AudioConverter().resampleAudioFile(audioURL)
+            samples = try await StreamingAudioResampler.resampleToMonoFloat32(
+                url: audioURL,
+                progress: { _ in }
+            )
         } catch {
             throw EmbedError.audioReadFailed(audioURL)
         }
