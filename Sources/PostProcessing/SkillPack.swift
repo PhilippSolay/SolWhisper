@@ -133,6 +133,35 @@ struct SkillPack: Sendable, Identifiable, Equatable {
         return (system, user)
     }
 
+    /// Builds a tiny classification-only prompt: just the parent SKILL.md
+    /// (which carries the Step-1 routing table) + a transcript head + the
+    /// list of valid type ids. The model returns one type id, which the
+    /// caller validates and feeds back into `renderPrompt(meetingType:)`.
+    /// This avoids shipping all ~84KB of type modules just to *pick* one.
+    func renderClassificationPrompt(transcriptHead: String) -> (system: String, user: String) {
+        let system = """
+        You classify meeting transcripts into one of a fixed set of meeting types using the rubric below. Reply with ONLY the type id (one token from the allowed list), no prose, no quotes, no punctuation.
+
+        ─── Routing rubric (parent skill) ───
+
+        \(parent.body)
+        """
+
+        let allowed = typeIDs.joined(separator: ", ")
+        let user = """
+        Allowed type ids: \(allowed)
+
+        Transcript head (first portion only — enough to identify the meeting shape):
+
+        <transcript>
+        \(transcriptHead)
+        </transcript>
+
+        Reply with one of: \(allowed)
+        """
+        return (system, user)
+    }
+
     /// Scrubs untrusted strings (calendar event title, attendee display
     /// names) before they go into the LLM prompt. Removes control chars,
     /// collapses whitespace, and neutralizes angle-bracket sequences that

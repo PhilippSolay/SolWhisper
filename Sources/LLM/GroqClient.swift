@@ -7,10 +7,26 @@ struct GroqClient: LLMClient {
 
     static let endpoint = URL(string: "https://api.groq.com/openai/v1/chat/completions")!
 
+    /// 5 minute ceiling. Groq itself is fast; the long ceiling is insurance
+    /// against transient backend slowdowns on the largest models.
+    static let requestTimeout: TimeInterval = 300
+
     func complete(messages: [LLMMessage],
                   model: String,
                   temperature: Double,
                   maxTokens: Int) async throws -> String {
+        try await LLMRetry.run("groq.complete") {
+            try await self.rawComplete(messages: messages,
+                                        model: model,
+                                        temperature: temperature,
+                                        maxTokens: maxTokens)
+        }
+    }
+
+    private func rawComplete(messages: [LLMMessage],
+                              model: String,
+                              temperature: Double,
+                              maxTokens: Int) async throws -> String {
         let apiKey = (try? KeychainStore.string(
             forKey: ModelProvider.groq.apiKeyKeychainKey
         )) ?? ""
@@ -20,6 +36,7 @@ struct GroqClient: LLMClient {
         req.httpMethod = "POST"
         req.setValue("Bearer \(apiKey)",  forHTTPHeaderField: "Authorization")
         req.setValue("application/json",   forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = Self.requestTimeout
 
         let body: [String: Any] = [
             "model": model,

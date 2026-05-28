@@ -16,23 +16,34 @@ struct DeepgramDiarizer: DiarizationEngine {
         let apiKey = UserDefaults.standard.string(forKey: "deepgramApiKey") ?? ""
         guard !apiKey.isEmpty else { throw DiarizationError.missingApiKey("deepgram") }
 
-        guard let audio = try? Data(contentsOf: audioURL) else {
+        guard FileManager.default.fileExists(atPath: audioURL.path) else {
             throw DiarizationError.audioReadFailed(audioURL)
         }
-        await MainActor.run { progress(0.10) }
+        await MainActor.run { progress(0.05) }
 
         var req = URLRequest(url: Self.endpoint)
         req.httpMethod = "POST"
         req.setValue("Token \(apiKey)", forHTTPHeaderField: "Authorization")
         // Accepts any content type Deepgram supports; let it sniff the WAV header.
         req.setValue(mimeType(for: audioURL), forHTTPHeaderField: "Content-Type")
-        req.httpBody = audio
         // Long timeout — diarization can take ~RT-of-audio for cloud paths.
         req.timeoutInterval = 600
 
-        await MainActor.run { progress(0.30) }
+        // Stream from disk + report real upload progress so the UI bar
+        // doesn't park at a single tick for the entire multi-minute
+        // transfer of a 100+ MB recording.
+        let uploadProgress = UploadProgressDelegate()
+        uploadProgress.onProgress = { fraction in
+            // 0.05…0.55 covers the upload phase; the post-upload ingest
+            // wait then jumps to 0.85 once Deepgram returns.
+            Task { @MainActor in progress(0.05 + 0.50 * fraction) }
+        }
 
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await URLSession.shared.upload(
+            for: req,
+            fromFile: audioURL,
+            delegate: uploadProgress
+        )
         if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
             throw DiarizationError.http(status: http.statusCode,
                                           body: String(data: data, encoding: .utf8) ?? "")

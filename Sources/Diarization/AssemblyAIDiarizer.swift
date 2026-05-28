@@ -17,6 +17,12 @@ struct AssemblyAIDiarizer: DiarizationEngine {
     static let pollIntervalSec: UInt64 = 3
     static let maxPollAttempts: Int = 100   // 100 × 3s = 5 min
 
+    /// Per-request timeout. Raised well above URLSession's 60s default so
+    /// the upload step doesn't blow up on long meetings — a 1h+ WAV is
+    /// 100MB+ and routinely needs more than a minute on home connections.
+    static let uploadTimeout: TimeInterval = 600
+    static let pollTimeout:   TimeInterval = 60
+
     static let apiKeyKeychainKey = "diarizer.assemblyai.apiKey"
 
     func diarize(audioURL: URL,
@@ -25,8 +31,12 @@ struct AssemblyAIDiarizer: DiarizationEngine {
         guard !apiKey.isEmpty else { throw DiarizationError.missingApiKey("assemblyai") }
 
         // 1. Upload the audio file. AssemblyAI's upload endpoint is a raw
-        // POST of the bytes — no multipart, no metadata.
-        guard let audioBytes = try? Data(contentsOf: audioURL) else {
+        // POST of the bytes — no multipart, no metadata. We stream from
+        // disk via `upload(for:fromFile:)` so a 100+ MB recording doesn't
+        // get loaded into RAM, and we attach a delegate so the UI bar
+        // tracks bytes-sent (without it the bar parks at 5% for the
+        // entire multi-minute upload).
+        guard FileManager.default.fileExists(atPath: audioURL.path) else {
             throw DiarizationError.audioReadFailed(audioURL)
         }
         await MainActor.run { progress(0.05) }
@@ -35,9 +45,20 @@ struct AssemblyAIDiarizer: DiarizationEngine {
         upReq.httpMethod = "POST"
         upReq.setValue(apiKey, forHTTPHeaderField: "authorization")
         upReq.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        upReq.httpBody = audioBytes
+        upReq.timeoutInterval = Self.uploadTimeout
 
-        let (upData, upResponse) = try await URLSession.shared.data(for: upReq)
+        let uploadProgress = UploadProgressDelegate()
+        uploadProgress.onProgress = { fraction in
+            // Map bytes-sent 0…1 into our 0.05…0.30 phase budget so the
+            // bar advances steadily while AssemblyAI ingests the file.
+            Task { @MainActor in progress(0.05 + 0.25 * fraction) }
+        }
+
+        let (upData, upResponse) = try await URLSession.shared.upload(
+            for: upReq,
+            fromFile: audioURL,
+            delegate: uploadProgress
+        )
         if let http = upResponse as? HTTPURLResponse, http.statusCode >= 400 {
             throw DiarizationError.http(status: http.statusCode,
                                           body: String(data: upData, encoding: .utf8) ?? "")
@@ -53,6 +74,7 @@ struct AssemblyAIDiarizer: DiarizationEngine {
         jobReq.httpMethod = "POST"
         jobReq.setValue(apiKey, forHTTPHeaderField: "authorization")
         jobReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        jobReq.timeoutInterval = Self.pollTimeout
         let body: [String: Any] = [
             "audio_url": uploadURL,
             "speaker_labels": true
@@ -74,6 +96,7 @@ struct AssemblyAIDiarizer: DiarizationEngine {
         let pollURL = Self.transcriptURL.appendingPathComponent(jobID)
         var pollReq = URLRequest(url: pollURL)
         pollReq.setValue(apiKey, forHTTPHeaderField: "authorization")
+        pollReq.timeoutInterval = Self.pollTimeout
 
         for attempt in 0..<Self.maxPollAttempts {
             try await Task.sleep(nanoseconds: Self.pollIntervalSec * 1_000_000_000)

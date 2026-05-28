@@ -7,10 +7,25 @@ struct OpenAIClient: LLMClient {
 
     static let endpoint = URL(string: "https://api.openai.com/v1/chat/completions")!
 
+    /// 5 minute ceiling — covers slow summaries on o-series reasoning models.
+    static let requestTimeout: TimeInterval = 300
+
     func complete(messages: [LLMMessage],
                   model: String,
                   temperature: Double,
                   maxTokens: Int) async throws -> String {
+        try await LLMRetry.run("openai.complete") {
+            try await self.rawComplete(messages: messages,
+                                        model: model,
+                                        temperature: temperature,
+                                        maxTokens: maxTokens)
+        }
+    }
+
+    private func rawComplete(messages: [LLMMessage],
+                              model: String,
+                              temperature: Double,
+                              maxTokens: Int) async throws -> String {
         let apiKey = (try? KeychainStore.string(
             forKey: ModelProvider.openai.apiKeyKeychainKey
         )) ?? ""
@@ -20,6 +35,7 @@ struct OpenAIClient: LLMClient {
         req.httpMethod = "POST"
         req.setValue("Bearer \(apiKey)",  forHTTPHeaderField: "Authorization")
         req.setValue("application/json",   forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = Self.requestTimeout
 
         var body: [String: Any] = [
             "model": model,

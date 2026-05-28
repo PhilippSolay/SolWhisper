@@ -9,10 +9,25 @@ struct GoogleClient: LLMClient {
 
     static let baseURL = "https://generativelanguage.googleapis.com/v1beta/models"
 
+    /// 5 minute ceiling. Gemini Pro can take a minute+ on long inputs.
+    static let requestTimeout: TimeInterval = 300
+
     func complete(messages: [LLMMessage],
                   model: String,
                   temperature: Double,
                   maxTokens: Int) async throws -> String {
+        try await LLMRetry.run("google.complete") {
+            try await self.rawComplete(messages: messages,
+                                        model: model,
+                                        temperature: temperature,
+                                        maxTokens: maxTokens)
+        }
+    }
+
+    private func rawComplete(messages: [LLMMessage],
+                              model: String,
+                              temperature: Double,
+                              maxTokens: Int) async throws -> String {
         let apiKey = (try? KeychainStore.string(
             forKey: ModelProvider.google.apiKeyKeychainKey
         )) ?? ""
@@ -24,6 +39,7 @@ struct GoogleClient: LLMClient {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = Self.requestTimeout
 
         // Split out system prompts; merge into a single systemInstruction.
         let systemText = messages
