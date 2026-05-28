@@ -110,13 +110,30 @@ fi
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   xcodebuild "${XCODEBUILD_ARGS[@]}" 2>&1 | grep -E "(error:|BUILD SUCCEEDED|BUILD FAILED)" | head -3
 
-APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData/${APP_NAME}-*/Build/Products/Release -name "$APP_NAME.app" -maxdepth 1 2>/dev/null | head -1)
+# Pick the NEWEST Release product by mtime. A plain `find … | head -1`
+# picks the alphabetically-first DerivedData dir, which can be a stale
+# build from a months-old release (Xcode keeps old DerivedData dirs around
+# when the project identity hash changes). That bug shipped a v0.5.1 binary
+# inside the v0.6.0 / v0.6.1 DMGs. mtime-sort always selects the build we
+# just produced.
+APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData/${APP_NAME}-*/Build/Products/Release -name "$APP_NAME.app" -maxdepth 1 2>/dev/null \
+            | xargs -I{} stat -f "%m {}" 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-)
 if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
     echo "  ✗ Build product not found"
     exit 1
 fi
 
 BUILD=$(plutil -extract CFBundleVersion raw "$APP_PATH/Contents/Info.plist")
+# Guard against packaging a stale app: the freshly built bundle MUST carry
+# the version we just stamped into the source plist. If it doesn't, we
+# grabbed the wrong DerivedData and must stop before shipping old code.
+APP_SHORT=$(plutil -extract CFBundleShortVersionString raw "$APP_PATH/Contents/Info.plist")
+if [ "$APP_SHORT" != "$VERSION" ]; then
+    echo "  ✗ Built app reports version $APP_SHORT but releasing $VERSION."
+    echo "    Stale build product selected: $APP_PATH"
+    echo "    Aborting before a stale binary gets packaged."
+    exit 1
+fi
 echo "  ✓ Built $APP_NAME $VERSION (build $BUILD)"
 
 # ── Package DMG ──────────────────────────────────────────────────────────────
