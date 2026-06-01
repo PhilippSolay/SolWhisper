@@ -102,14 +102,43 @@ struct FluidAudioDiarizer: DiarizationEngine {
         return DiarizationMapper.normalizeToLetters(raw)
     }
 
-    /// Static helper used by `VoiceProfileEmbedder` to extract a single
-    /// embedding from a slice of audio. Reuses the same model load.
+    /// Static helper used by `VoiceProfileEmbedder` and `VoiceMatcher` to
+    /// extract a single embedding from a slice of audio. Reuses a cached
+    /// `DiarizerManager` across calls so the model-compile cost (heavy on
+    /// CoreML) only happens once per app session, not per profile/letter.
+    /// Without this cache, backfilling N profiles meant N cold model loads
+    /// — roughly N × 1.5s of pure overhead.
     @available(macOS 14.0, *)
     static func extractEmbedding(samples: [Float]) async throws -> [Float] {
-        let models = try await DiarizerModels.downloadIfNeeded()
-        let manager = DiarizerManager(config: .default)
-        manager.initialize(models: consume models)
+        let manager = try await EmbedderCache.sharedManager()
         return try manager.extractSpeakerEmbedding(from: samples)
+    }
+
+    /// Process-wide singleton holding the loaded FluidAudio diarizer.
+    /// Constructed on first use, then reused for every subsequent
+    /// `extractEmbedding` call. Concurrent first-use is serialized by the
+    /// actor so we never double-download or double-compile.
+    @available(macOS 14.0, *)
+    actor EmbedderCache {
+        static let shared = EmbedderCache()
+        private var manager: DiarizerManager?
+
+        static func sharedManager() async throws -> DiarizerManager {
+            try await shared.get()
+        }
+
+        private func get() async throws -> DiarizerManager {
+            if let manager { return manager }
+            let models = try await DiarizerModels.downloadIfNeeded()
+            let m = DiarizerManager(config: .default)
+            m.initialize(models: consume models)
+            self.manager = m
+            return m
+        }
+
+        /// Drops the cached manager. Useful for tests and for recovering
+        /// from a corrupted model load. The next call rebuilds it.
+        func reset() { manager = nil }
     }
     #endif
 }
