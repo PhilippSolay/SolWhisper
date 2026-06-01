@@ -47,13 +47,18 @@ enum StreamingAudioResampler {
     /// 0.0...1.0 (linear in input frames consumed). Honours task cancellation
     /// — call `Task.cancel()` on the wrapping task to stop the run.
     ///
-    /// `progress` runs on the MainActor so SwiftUI bindings can observe it
-    /// directly. The actual conversion is on whichever executor the caller
-    /// is on (typically a Task — i.e. cooperative pool).
+    /// `progress` is `@Sendable` — the resampler calls it inline rather than
+    /// hopping to MainActor. Callers who need MainActor for SwiftUI bindings
+    /// should wrap their callback in a `Task { @MainActor in … }`. This was
+    /// the source of a real deadlock: while a modal `NSAlert.runModal` blocks
+    /// the main thread (e.g. the launch-time permissions prompt), an internal
+    /// `await MainActor.run` here meant every chunk's progress callback
+    /// blocked the resample loop indefinitely, even though the actual decode
+    /// work doesn't need MainActor at all.
     static func resampleToMonoFloat32(
         url: URL,
         targetSampleRate: Double = defaultTargetSampleRate,
-        progress: @MainActor @escaping (Double) -> Void
+        progress: @Sendable @escaping (Double) -> Void
     ) async throws -> [Float] {
 
         let file: AVAudioFile
@@ -144,7 +149,7 @@ enum StreamingAudioResampler {
             outputBuffer.frameLength = 0
 
             let fraction = Double(framesRead) / Double(max(totalFrames, 1))
-            await MainActor.run { progress(min(fraction, 0.999)) }
+            progress(min(fraction, 0.999))
         }
 
         // Flush any tail samples the converter still holds.
@@ -165,7 +170,7 @@ enum StreamingAudioResampler {
             }
         }
 
-        await MainActor.run { progress(1.0) }
+        progress(1.0)
         return result
     }
 }

@@ -354,17 +354,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let list = missing.joined(separator: ", ")
             DebugLog.shared.log(icon: "⚠️", label: "Missing permissions", value: list, ok: false)
 
-            // Show alert after a brief delay so the menu bar is ready
+            // Show as a system user-notification rather than a modal alert.
+            //
+            // `NSAlert.runModal()` enters a nested runloop on the main thread
+            // that STARVES Swift concurrency — every `@MainActor`-bound
+            // continuation queues until the user dismisses the alert. That
+            // deadlocks `VoiceProfileBackfill`'s final `store.update` write
+            // (the heavy embedding work runs off-main, but persistence has
+            // to hop back to the @MainActor store) and any other async work
+            // landing during launch.
+            //
+            // The notification is non-blocking: clicking it can deep-link to
+            // System Settings later. Users who never grant the permissions
+            // still see the menu-bar UI's own indicators when they try to
+            // use a gated feature, so the prompt isn't load-bearing.
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                let alert = NSAlert()
-                alert.messageText = "SolWhisper needs permissions"
-                alert.informativeText = "The following permissions are not granted:\n\n\(list)\n\nOpen System Settings → Privacy & Security to enable them."
-                alert.alertStyle = .warning
-                alert.addButton(withTitle: "Open System Settings")
-                alert.addButton(withTitle: "Later")
-                if alert.runModal() == .alertFirstButtonReturn {
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy")!)
-                }
+                let n = NSUserNotification()
+                n.title = "SolWhisper needs permissions"
+                n.informativeText = "Not granted: \(list). Open System Settings → Privacy & Security to enable."
+                n.hasActionButton = true
+                n.actionButtonTitle = "Open Settings"
+                n.otherButtonTitle = "Later"
+                NSUserNotificationCenter.default.deliver(n)
             }
         } else {
             DebugLog.shared.log(icon: "✅", label: "All permissions granted")

@@ -8,7 +8,12 @@ import FluidAudio
 ///
 /// macOS 14+ only — FluidAudio's floor. Older systems get a graceful
 /// "name only" profile with no embedding.
-@MainActor
+///
+/// **Not** `@MainActor` — the heavy work (audio resample + CoreML embedding
+/// extraction) runs on the cooperative pool so a modal alert at launch (the
+/// permissions prompt is a classic example) can't block the backfill. The
+/// only MainActor-bound side effect is the final `store.update`, which is
+/// hopped onto MainActor explicitly with `await`.
 enum VoiceProfileEmbedder {
 
     enum EmbedError: Error, LocalizedError {
@@ -62,6 +67,11 @@ enum VoiceProfileEmbedder {
         // folder ever had an `embedding` field — capture started, the
         // file load deadlocked, and the catch in MeetingDetailView only
         // logged a line nobody saw.
+        // Note: deliberately no DebugLog calls between here and the final
+        // `store.update`. DebugLog is @MainActor and hopping to MainActor
+        // mid-capture would defeat the whole point of running off-main —
+        // a held modal alert would deadlock the resample. Errors are
+        // logged by the backfill caller via the Task.detached return.
         let samples: [Float]
         do {
             samples = try await StreamingAudioResampler.resampleToMonoFloat32(
@@ -93,13 +103,13 @@ enum VoiceProfileEmbedder {
             throw EmbedError.underlying(error.localizedDescription)
         }
 
-        // 4. Persist embedding bytes onto the profile.
+        // 4. Persist embedding bytes onto the profile. The store is
+        // @MainActor; this hop will queue if MainActor is blocked (e.g.
+        // a modal alert is up at launch) and run as soon as it frees.
         var updated = profile
         updated.embedding = floatsToData(embedding)
         updated.embeddingDim = embedding.count
-        store.update(updated)
-        DebugLog.shared.log(icon: "👥", label: "Voiceprint captured",
-                            value: "\(profile.name) · \(embedding.count) dims · \(clip.count) samples")
+        await MainActor.run { store.update(updated) }
         #else
         throw EmbedError.underlying("FluidAudio package not linked.")
         #endif

@@ -1160,7 +1160,21 @@ struct MeetingDetailView: View {
 
         let profile: VoiceProfile
         if let existing {
-            profile = existing
+            // Reuse existing profile but fill in the source link if missing.
+            // Without this, a re-save of a pre-existing name-only stub (e.g.
+            // anything added via Settings → People → "Add name") would still
+            // have nil source fields, and the backfill's fast path would
+            // skip it forever even though we now know exactly where its
+            // audio lives.
+            if existing.sourceMeetingID == nil || existing.sourceSpeakerLetter == nil {
+                var patched = existing
+                patched.sourceMeetingID = meeting.id
+                patched.sourceSpeakerLetter = letter
+                voiceProfiles.update(patched)
+                profile = patched
+            } else {
+                profile = existing
+            }
             DebugLog.shared.log(icon: "👥", label: "Voice profile reused",
                                 value: "\(trimmed) (Speaker \(letter))")
         } else {
