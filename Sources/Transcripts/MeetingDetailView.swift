@@ -92,46 +92,61 @@ struct MeetingDetailView: View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    actionRow
+                    // While the live pipeline (Transcribe → Clean → Diarize →
+                    // Summarize) is running, hide the action buttons + body
+                    // — they're disabled mid-pipeline anyway, and the buttons
+                    // create visual noise that suggests the user should be
+                    // doing something. Keep Delete reachable (top right) plus
+                    // the metadata they might still want to edit (title,
+                    // calendar link, context). The body re-appears
+                    // automatically when the pipeline finishes and reloadAll
+                    // refreshes the transcript/summary in place.
                     if pipelineActive {
+                        deleteOnlyRow
                         MeetingPipelineProgress(steps: pipelineSteps,
                                                 totalElapsed: pipelineElapsed)
-                    }
-                    progressStrip
-                    titleAndMeta
-                    calendarEventBox
-                    contextField
-                    if let err = retranscribeError {
-                        Text(err).font(.system(size: 12)).foregroundColor(.red)
-                    }
-                    if let err = cleanError {
-                        Text(err).font(.system(size: 12)).foregroundColor(.red)
-                    }
-                    if let err = diarizeError {
-                        Text(err).font(.system(size: 12)).foregroundColor(.red)
-                    }
-                    if let err = suggestError {
-                        Text(err).font(.system(size: 12)).foregroundColor(.red)
-                    }
-                    if let err = summaryError, summary == nil {
-                        Text(err).font(.system(size: 12)).foregroundColor(.red)
-                    }
-                    if let err = sendError {
-                        Text(err).font(.system(size: 12)).foregroundColor(.red)
-                    }
-                    if let err = voiceprintError {
-                        Text(err).font(.system(size: 12)).foregroundColor(.red)
-                    }
-                    bodyTabBar
-                    Group {
-                        switch bodyTab {
-                        case .transcript:
-                            transcriptSection
-                        case .summary:
-                            if let summary {
-                                summarySection(summary)
-                            } else {
-                                emptySummaryState
+                        progressStrip
+                        titleAndMeta
+                        calendarEventBox
+                        contextField
+                    } else {
+                        actionRow
+                        progressStrip
+                        titleAndMeta
+                        calendarEventBox
+                        contextField
+                        if let err = retranscribeError {
+                            Text(err).font(.system(size: 12)).foregroundColor(.red)
+                        }
+                        if let err = cleanError {
+                            Text(err).font(.system(size: 12)).foregroundColor(.red)
+                        }
+                        if let err = diarizeError {
+                            Text(err).font(.system(size: 12)).foregroundColor(.red)
+                        }
+                        if let err = suggestError {
+                            Text(err).font(.system(size: 12)).foregroundColor(.red)
+                        }
+                        if let err = summaryError, summary == nil {
+                            Text(err).font(.system(size: 12)).foregroundColor(.red)
+                        }
+                        if let err = sendError {
+                            Text(err).font(.system(size: 12)).foregroundColor(.red)
+                        }
+                        if let err = voiceprintError {
+                            Text(err).font(.system(size: 12)).foregroundColor(.red)
+                        }
+                        bodyTabBar
+                        Group {
+                            switch bodyTab {
+                            case .transcript:
+                                transcriptSection
+                            case .summary:
+                                if let summary {
+                                    summarySection(summary)
+                                } else {
+                                    emptySummaryState
+                                }
                             }
                         }
                     }
@@ -164,6 +179,11 @@ struct MeetingDetailView: View {
             }
             if newPhase == nil {
                 pipelineStartedAt = nil
+                // Pipeline finished — re-read transcript + summary from disk so
+                // the body tab shows the just-produced content without the
+                // user having to navigate away and back. Cheap (small JSON +
+                // markdown), only fires on the transition to nil.
+                reloadAll()
             }
         }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
@@ -385,6 +405,21 @@ struct MeetingDetailView: View {
     }
 
     // MARK: - Sections
+
+    /// Minimal top row used while the live pipeline is running. Just the
+    /// Delete button (right-aligned) — the full action row's buttons are
+    /// disabled mid-pipeline and only add clutter, so we hide them entirely.
+    private var deleteOnlyRow: some View {
+        HStack {
+            Spacer()
+            Button(role: .destructive) {
+                showDeleteConfirm = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+        .controlSize(.regular)
+    }
 
     private var actionRow: some View {
         HStack(spacing: 8) {
