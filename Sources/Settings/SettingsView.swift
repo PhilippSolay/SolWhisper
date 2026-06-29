@@ -11,6 +11,7 @@ enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
     case meetings      = "STT Meetings"
     case ocr           = "Screen Capture"
     case translate     = "Translate"
+    case voiceTranslate = "Voice Translate"
     case audio         = "Audio"
     case hotkey        = "Hotkey"
     case models        = "Models"
@@ -29,6 +30,7 @@ enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
         case .meetings:      "person.2.wave.2"
         case .ocr:           "rectangle.dashed.and.paperclip"
         case .translate:     "globe"
+        case .voiceTranslate: "globe.badge.chevron.backward"
         case .audio:         "speaker.wave.3"
         case .hotkey:        "keyboard"
         case .models:        "brain"
@@ -62,6 +64,7 @@ struct SettingsView: View {
                 case .meetings:      MeetingSettingsView()
                 case .ocr:           OCRSettingsView()
                 case .translate:     TranslateSettingsView()
+                case .voiceTranslate: VoiceTranslateSettingsView()
                 case .audio:         AudioSettingsView()
                 case .hotkey:        HotkeySettingsView()
                 case .models:        ModelsSettingsView()
@@ -327,12 +330,16 @@ struct HotkeySettingsView: View {
     /// Translate Snap hotkey — paired with the Translate-from-screen flow.
     @AppStorage("translateHotkeyKeyCode")        private var translateHotkeyKeyCode        = 0
     @AppStorage("translateHotkeyModifierMask")   private var translateHotkeyModifierMask   = 0
+    /// Voice-translate hotkey — speak, then paste the translation. Ships unset.
+    @AppStorage("voiceTranslateHotkeyKeyCode")      private var voiceTranslateHotkeyKeyCode      = 0
+    @AppStorage("voiceTranslateHotkeyModifierMask") private var voiceTranslateHotkeyModifierMask = 0
     @State private var isRecordingHotkey         = false
     @State private var isRecordingPauseHotkey    = false
     @State private var isRecordingSnipHotkey     = false
     @State private var isRecordingMeetingHotkey  = false
     @State private var isRecordingTranscriptsHotkey = false
     @State private var isRecordingTranslateHotkey   = false
+    @State private var isRecordingVoiceTranslateHotkey = false
 
     var body: some View {
         Form {
@@ -378,6 +385,13 @@ struct HotkeySettingsView: View {
                     keyCode:      $translateHotkeyKeyCode,
                     modifierMask: $translateHotkeyModifierMask,
                     isRecording:  $isRecordingTranslateHotkey
+                )
+                HotkeyRow(
+                    title: "Voice Translate",
+                    subtitle: "Speak, then paste the translation in your target language",
+                    keyCode:      $voiceTranslateHotkeyKeyCode,
+                    modifierMask: $voiceTranslateHotkeyModifierMask,
+                    isRecording:  $isRecordingVoiceTranslateHotkey
                 )
             } header: {
                 Text("Keyboard Shortcuts")
