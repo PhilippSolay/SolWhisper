@@ -4,10 +4,15 @@ import Foundation
 /// Apple `Translation` framework accepts these directly; the LLM engine uses
 /// the human-readable label in its prompt.
 ///
-/// Keep the curated list small — five today (matches the v0.6 brief). Users
-/// can extend the picker via the runtime "Auto" suggestion from the detected
-/// source language, but the menu stays focused on the common cases so the
-/// dropdown stays scannable.
+/// This single `curated` array is the source of truth for EVERY target-language
+/// dropdown and the default-language settings across the app. Adding a language
+/// is a one-line change here — append a `.init(code:label:)` entry and it shows
+/// up everywhere automatically. Codes are BCP-47; the Apple engine accepts them
+/// directly and the LLM engine uses the label in its prompt.
+///
+/// Availability differs by engine: the Apple on-device translator may need to
+/// download a ~50 MB pack per pair (and not every language is offered), while
+/// the LLM engine handles any entry with no download. See `TranslationEngine`.
 struct TranslationLanguage: Hashable, Identifiable, Sendable {
 
     let code: String   // BCP-47, e.g. "en", "fr", "id", "es", "zh-Hans"
@@ -15,13 +20,20 @@ struct TranslationLanguage: Hashable, Identifiable, Sendable {
 
     var id: String { code }
 
-    /// The five v1 picker entries. Order is intentional: English first
-    /// (most common target), then the rest alphabetical for predictability.
+    /// The curated picker entries. Order is intentional: English first
+    /// (most common target), then the rest alphabetical by label for
+    /// predictability. Append here to add a language everywhere at once.
     static let curated: [TranslationLanguage] = [
         .init(code: "en",      label: "English"),
         .init(code: "zh-Hans", label: "Chinese (Simplified)"),
+        .init(code: "fa",      label: "Farsi"),
         .init(code: "fr",      label: "French"),
+        .init(code: "de",      label: "German"),
         .init(code: "id",      label: "Indonesian"),
+        .init(code: "it",      label: "Italian"),
+        .init(code: "ja",      label: "Japanese"),
+        .init(code: "ko",      label: "Korean"),
+        .init(code: "ru",      label: "Russian"),
         .init(code: "es",      label: "Spanish")
     ]
 
