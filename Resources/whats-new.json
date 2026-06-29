@@ -2,16 +2,22 @@
   "version": 1,
   "items": [
     {
+      "date": "2026-06-29",
+      "version": "0.7.0",
+      "title": "Lighter meeting recordings",
+      "body": "Recordings now store as mono AAC \u2014 about 30\u00d7 smaller \u2014 and a one-time pass safely recompresses your existing meetings to reclaim the space."
+    },
+    {
       "date": "2026-05-03",
       "version": "0.4.0-alpha.3",
       "title": "Custom webhooks + DeviceMonitor",
-      "body": "Wire SolWhisper to anything that speaks HTTP. Mid-call mic switches no longer kill recordings — we catch the disconnect and let you keep going on AirPods."
+      "body": "Wire SolWhisper to anything that speaks HTTP. Mid-call mic switches no longer kill recordings \u2014 we catch the disconnect and let you keep going on AirPods."
     },
     {
       "date": "2026-05-03",
       "version": "0.4.0-alpha.2",
       "title": "Meeting pill + dictation history",
-      "body": "Real per-bin waveform during meetings, clipping ring when you're hot, manual Summarize button, and a History tab so you can fish out anything you ever dictated. Stats appear on Home — start typing less."
+      "body": "Real per-bin waveform during meetings, clipping ring when you're hot, manual Summarize button, and a History tab so you can fish out anything you ever dictated. Stats appear on Home \u2014 start typing less."
     },
     {
       "date": "2026-05-03",
