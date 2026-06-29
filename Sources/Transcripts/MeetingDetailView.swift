@@ -1349,7 +1349,7 @@ struct MeetingDetailView: View {
         Task { @MainActor in
             defer { retranscribing = false; retranscribeProgress = nil }
             let folder = store.folderURL(for: meeting)
-            // Find the audio file — could be audio.wav (recording) or
+            // Find the audio file — could be audio.m4a (recording) or
             // audio.<ext> (import). Pick the first match in the folder.
             let candidates = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
             guard let audioURL = candidates.first(where: { $0.lastPathComponent.hasPrefix("audio.") }) else {

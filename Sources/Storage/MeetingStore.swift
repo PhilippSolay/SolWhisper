@@ -206,8 +206,9 @@ final class MeetingStore: ObservableObject {
         rootDirectory.appendingPathComponent(meeting.folderName, isDirectory: true)
     }
 
-    /// Default audio file URL — extension is appended by callers (`audio.wav`,
-    /// `audio.mp3`, …) since imports preserve the original codec.
+    /// Default audio file URL — extension is appended by callers (`audio.m4a`
+    /// for recordings, `audio.mp3`/… for imports, which preserve the original
+    /// codec).
     func audioURL(for meeting: Meeting, ext: String) -> URL {
         folderURL(for: meeting).appendingPathComponent("audio.\(ext)")
     }

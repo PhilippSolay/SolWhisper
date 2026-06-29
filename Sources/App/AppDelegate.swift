@@ -169,6 +169,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // older than the user's "Keep recordings for" policy.
         RetentionSweep.run(meetingStore: meetingStore)
 
+        // One-shot: re-encode any legacy float32 WAV recordings to mono AAC
+        // .m4a and delete the WAVs (gated by `meetingAudioCompactionV1Done`).
+        MeetingAudioCompaction.runIfNeeded(meetingStore: meetingStore)
+
         // Refresh launch-on-login mirror state (in case user toggled it via
         // System Settings while the app was closed).
         LaunchAtLogin.shared.refresh()

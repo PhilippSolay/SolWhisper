@@ -384,9 +384,9 @@ final class MeetingController: ObservableObject {
     private func runPostProcessing(for meeting: Meeting) async {
         let folder = store.folderURL(for: meeting)
         let chunksDir = folder.appendingPathComponent("chunks")
-        let micOutURL = folder.appendingPathComponent("audio_mic.wav")
-        let systemOutURL = folder.appendingPathComponent("audio_system.wav")
-        let mixedOutURL = folder.appendingPathComponent("audio.wav")
+        let micOutURL = folder.appendingPathComponent("audio_mic.m4a")
+        let systemOutURL = folder.appendingPathComponent("audio_system.m4a")
+        let mixedOutURL = folder.appendingPathComponent("audio.m4a")
         let pipelineStart = Date()
 
         processingMeetingID = meeting.id
@@ -412,7 +412,7 @@ final class MeetingController: ObservableObject {
             let stitchStart = Date()
             try await stitchChunks(in: chunksDir, prefix: "mic", to: micOutURL)
             try await stitchChunks(in: chunksDir, prefix: "sys", to: systemOutURL)
-            try mixToCombined(mic: micOutURL, system: systemOutURL, output: mixedOutURL)
+            try await mixToCombined(mic: micOutURL, system: systemOutURL, output: mixedOutURL)
             // Remove the chunk directory now that we have the stitched files.
             try? FileManager.default.removeItem(at: chunksDir)
             logPhaseElapsed("Stitch", since: stitchStart)
@@ -520,7 +520,7 @@ final class MeetingController: ObservableObject {
         if autoDiarize, engineConfigured, !allSegments.isEmpty {
             setPhase(.diarizing, for: meeting)
             let diarizeStart = Date()
-            let combinedURL = store.audioURL(for: meeting, ext: "wav")
+            let combinedURL = store.audioURL(for: meeting, ext: "m4a")
             let docCopy = TranscriptDocument(meetingID: meeting.id, segments: allSegments)
             let outcome = await DiarizationRunner.run(
                 meeting: updated,
@@ -737,9 +737,50 @@ final class MeetingController: ObservableObject {
         )
     }
 
+    // MARK: - Audio encoding helpers
+
+    /// Bitrate for the persisted meeting archive: 128 kbps mono AAC, source
+    /// sample rate preserved (bitrate, not sample rate, caps the size).
+    static let archiveBitRate = 128_000
+
+    /// Collapses any-channel float32 PCM to a single mono channel (channel
+    /// average). Mono input passes through via a straight copy. Returns nil for
+    /// empty buffers or non-float data.
+    nonisolated static func downmixToMono(_ source: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        let frames = source.frameLength
+        guard frames > 0, let src = source.floatChannelData else { return nil }
+        let channels = Int(source.format.channelCount)
+        guard let monoFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                             sampleRate: source.format.sampleRate,
+                                             channels: 1,
+                                             interleaved: false),
+              let out = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: frames),
+              let dst = out.floatChannelData else { return nil }
+        out.frameLength = frames
+
+        let n = Int(frames)
+        if channels <= 1 {
+            memcpy(dst[0], src[0], n * MemoryLayout<Float>.size)
+        } else {
+            for i in 0..<n {
+                var sum: Float = 0
+                for ch in 0..<channels { sum += src[ch][i] }
+                dst[0][i] = sum / Float(channels)
+            }
+        }
+        return out
+    }
+
     // MARK: - Stitching
 
-    /// Concatenates `chunk-NNNN-<prefix>.wav` files in order into `output`.
+    /// Concatenates the float32 `chunk-NNNN-<prefix>.wav` files in order and
+    /// encodes the result straight to a mono AAC `.m4a` at `output`.
+    ///
+    /// The persisted archive is mono AAC (128 kbps) — ~30× smaller than the
+    /// float32 WAV chunks and transcription-grade for speech. Each chunk is
+    /// downmixed to mono before the encoder sees it. The chunks themselves
+    /// stay uncompressed WAV (safe for crash recovery) and are deleted by the
+    /// caller once stitching succeeds.
     private nonisolated func stitchChunks(in chunksDir: URL,
                                           prefix: String,
                                           to output: URL) async throws {
@@ -754,10 +795,9 @@ final class MeetingController: ObservableObject {
         guard let first = chunks.first else { return }
 
         let firstFile = try AVAudioFile(forReading: first)
-        let writer = try AVAudioFile(forWriting: output,
-                                     settings: firstFile.fileFormat.settings,
-                                     commonFormat: .pcmFormatFloat32,
-                                     interleaved: false)
+        let encoder = try AACMonoEncoder(url: output,
+                                         sampleRate: firstFile.processingFormat.sampleRate,
+                                         bitRate: Self.archiveBitRate)
 
         for chunkURL in chunks {
             let reader = try AVAudioFile(forReading: chunkURL)
@@ -769,15 +809,17 @@ final class MeetingController: ObservableObject {
                 continue
             }
             try reader.read(into: buffer)
-            try writer.write(from: buffer)
+            guard let mono = Self.downmixToMono(buffer) else { continue }
+            try encoder.append(mono)
         }
+        try await encoder.finish()
     }
 
     /// Quick mix: average the mic + system PCM streams. v0.4b adds RMS ducking.
     /// Mismatched durations are accepted — output length = max(mic, system).
     private nonisolated func mixToCombined(mic micURL: URL,
                                             system systemURL: URL,
-                                            output: URL) throws {
+                                            output: URL) async throws {
         let fm = FileManager.default
         let micExists = fm.fileExists(atPath: micURL.path)
         let systemExists = fm.fileExists(atPath: systemURL.path)
@@ -797,11 +839,10 @@ final class MeetingController: ObservableObject {
 
         let micFile = try AVAudioFile(forReading: micURL)
         let systemFile = try AVAudioFile(forReading: systemURL)
-        let outFormat = micFile.processingFormat   // pin to mic's format
-        let writer = try AVAudioFile(forWriting: output,
-                                     settings: micFile.fileFormat.settings,
-                                     commonFormat: .pcmFormatFloat32,
-                                     interleaved: false)
+        let outFormat = micFile.processingFormat   // pin to mic's format (mono)
+        let encoder = try AACMonoEncoder(url: output,
+                                         sampleRate: outFormat.sampleRate,
+                                         bitRate: Self.archiveBitRate)
 
         let block: AVAudioFrameCount = 4096
         let micFrames = AVAudioFrameCount(micFile.length)
@@ -830,9 +871,10 @@ final class MeetingController: ObservableObject {
                 outBuf.frameLength = micBuf.frameLength
                 mixInto(out: outBuf, a: micBuf, b: sysBuf, frames: Int(want))
             }
-            try writer.write(from: outBuf)
+            try encoder.append(outBuf)
             written += want
         }
+        try await encoder.finish()
     }
 
     /// Naive sum used when ducking is off. AudioMixer does the proper RMS-side-chain.

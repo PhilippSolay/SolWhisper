@@ -23,7 +23,7 @@ enum VoiceMatcher {
     static let matchThreshold: Double = 0.70
 
     /// Returns the matches found + writes them onto `meeting.speakerNames`.
-    /// `audioURL` should be the canonical mixed `audio.wav` (or import audio).
+    /// `audioURL` should be the canonical mixed `audio.m4a` (or import audio).
     static func match(meeting: Meeting,
                       transcript: TranscriptDocument,
                       audioURL: URL,
