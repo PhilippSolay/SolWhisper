@@ -12,6 +12,25 @@ final class TranslationLanguageTests: XCTestCase {
         XCTAssertTrue(codes.contains("zh-Hans"))
     }
 
+    func testCuratedListContainsExpandedLanguages() {
+        // Languages added for the voice-translate brief (Chinese already above).
+        let codes = TranslationLanguage.curated.map(\.code)
+        for code in ["fa", "ja", "ru", "de", "it", "ko"] {
+            XCTAssertTrue(codes.contains(code), "Curated list should include \(code)")
+        }
+    }
+
+    func testCuratedCodesAreUnique() {
+        let codes = TranslationLanguage.curated.map(\.code)
+        XCTAssertEqual(codes.count, Set(codes).count, "Curated language codes must be unique")
+    }
+
+    func testDefaultTargetIsPresentInCuratedList() {
+        let codes = TranslationLanguage.curated.map(\.code)
+        XCTAssertTrue(codes.contains(TranslationLanguage.defaultTargetCode),
+                      "defaultTargetCode must be a selectable curated entry")
+    }
+
     func testDefaultTargetIsEnglish() {
         XCTAssertEqual(TranslationLanguage.defaultTargetCode, "en")
     }
