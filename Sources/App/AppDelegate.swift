@@ -43,8 +43,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private(set) lazy var translationController = TranslationController()
     let voiceTranslateController = VoiceTranslateController()
     /// True while the active recording session should translate its transcript
-    /// before pasting (voice-translate mode) rather than paste it verbatim.
+    /// (voice-translate mode) rather than paste it verbatim.
     private var isVoiceTranslateActive = false
+    /// Holds the translate bubble presented after a voice-translate session so
+    /// it isn't deallocated while on screen.
+    private var voiceTranslateBubble: TranslateResultBubble?
     private var meetingMenuItem: NSMenuItem?
     private var audioMenuItem: NSMenuItem?
     private var audioSubmenuRef: NSMenu?
@@ -574,6 +577,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// `toggleRecording`, but the active session translates before pasting.
     /// Ignored if a plain dictation session is already running.
     @objc func toggleVoiceTranslate() {
+        DebugLog.shared.log(icon: "🌍", label: "VT-DIAG hotkey fired",
+                            value: "isRecording=\(transcriptionController.isRecording) active=\(isVoiceTranslateActive)",
+                            ok: false)
         if transcriptionController.isRecording {
             if isVoiceTranslateActive {
                 stopRecording()
@@ -584,6 +590,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             startRecording(voiceTranslate: true)
         }
+    }
+
+    /// Presents the shared translate bubble seeded with a voice transcript,
+    /// pre-selected to the Voice Translate default language. Reuses the exact
+    /// translation path Text Snap uses.
+    @MainActor
+    private func presentVoiceTranslateBubble(transcript: String, target: NSRunningApplication?) {
+        let bubble = TranslateResultBubble(
+            sourceText: transcript,
+            pasteTarget: target,
+            initialTargetOverride: voiceTranslateController.targetCode,
+            onDismiss: { [weak self] in self?.voiceTranslateBubble = nil }
+        )
+        voiceTranslateBubble = bubble
+        bubble.present()
+        DebugLog.shared.log(icon: "🌍", label: "Voice-translate bubble",
+                            value: "→ \(voiceTranslateController.targetCode)")
     }
 
     @objc func snipScreenText() {
@@ -604,6 +627,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func startRecording(voiceTranslate: Bool = false) {
         isVoiceTranslateActive = voiceTranslate
+        DebugLog.shared.log(icon: "🌍", label: "VT-DIAG startRecording",
+                            value: "voiceTranslate=\(voiceTranslate)", ok: false)
         // Snapshot the frontmost app RIGHT NOW — before the overlay appears.
         // pasteTarget (notification-based) is a fallback; frontmostApplication is
         // more reliable when triggered via hotkey while the user is in another app.
@@ -656,6 +681,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // starts clean regardless of how this one ends.
         let translateActive = isVoiceTranslateActive
         isVoiceTranslateActive = false
+        DebugLog.shared.log(icon: "🌍", label: "VT-DIAG stop",
+                            value: "translateActive=\(translateActive)", ok: false)
 
         AudioFeedback.play(.stop)
         PlaybackController.recordingDidEnd()
@@ -670,20 +697,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     return
                 }
 
-                // Voice-translate mode: translate the transcript before pasting.
-                // On failure we fall back to the raw transcript so the user is
-                // never left empty-handed, and surface the error in the log.
-                var outputText = text
+                // Voice-translate mode: hand the transcript to the SAME
+                // translation bubble Text Snap uses — proven Apple/LLM
+                // translation, source auto-detect, language dropdown, and paste.
+                // We do NOT run the dictation paste path in this case.
                 if translateActive, let self {
-                    do {
-                        outputText = try await self.voiceTranslateController.translate(text)
-                        DebugLog.shared.log(icon: "🌍", label: "Voice-translate done",
-                                            value: "→ \(self.voiceTranslateController.targetCode) via \(self.voiceTranslateController.engineKind.rawValue)")
-                    } catch {
-                        DebugLog.shared.log(icon: "🌍", label: "Voice-translate failed",
-                                            value: error.localizedDescription, ok: false)
-                        outputText = text
-                    }
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    self.presentVoiceTranslateBubble(transcript: text, target: target)
+                    let duration = startedAt.map { Date().timeIntervalSince($0) } ?? 0
+                    DictationHistoryStore.shared.record(DictationEntry(
+                        durationSeconds: duration,
+                        backend: backend,
+                        originalText: text,
+                        polishedText: text,
+                        targetAppBundleID: target?.bundleIdentifier,
+                        targetAppName: target?.localizedName
+                    ))
+                    return
                 }
 
                 // Let the window server fully remove the panel before pasting
@@ -692,22 +722,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // Always copy to clipboard so the user can ⌘V manually if
                 // auto-paste is off OR the paste fails. Additive-clipboard
                 // mode appends instead of replacing.
-                let pasteboardText = AdditiveClipboard.shared.write(outputText)
+                let pasteboardText = AdditiveClipboard.shared.write(text)
 
                 let autoPaste = (UserDefaults.standard.object(forKey: "dictationAutoPaste") as? Bool) ?? true
                 if autoPaste {
                     await PasteManager.paste(text: pasteboardText, into: target)
                 }
 
-                // Record into dictation history. For voice-translate the raw
-                // transcript is the "original" and the translation is what we
-                // pasted ("polished" slot); for plain dictation both match.
+                // Record into dictation history.
                 let duration = startedAt.map { Date().timeIntervalSince($0) } ?? 0
                 DictationHistoryStore.shared.record(DictationEntry(
                     durationSeconds: duration,
                     backend: backend,
                     originalText: text,
-                    polishedText: outputText,
+                    polishedText: text,
                     targetAppBundleID: target?.bundleIdentifier,
                     targetAppName: target?.localizedName
                 ))

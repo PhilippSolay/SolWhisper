@@ -45,7 +45,13 @@ if ! security find-identity -p codesigning | grep -q "$IDENTITY"; then
   echo "  done. (cert is self-signed / untrusted — fine for local signing + TCC stability)"
 fi
 
-# 2. Build, signed with the stable identity, hardened runtime OFF.
+# 2. Regenerate the Xcode project so newly added source files are included.
+if command -v xcodegen >/dev/null 2>&1; then
+  echo "▶ xcodegen generate…"
+  xcodegen generate >/dev/null
+fi
+
+# 3. Build, signed with the stable identity, hardened runtime OFF.
 echo "▶ Building $APP_NAME (signed: $IDENTITY)…"
 DEVELOPER_DIR="$DEVELOPER_DIR_PATH" xcodebuild \
   -project "$PROJECT" -scheme "$SCHEME" -configuration Debug build \

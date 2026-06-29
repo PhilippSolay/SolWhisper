@@ -88,24 +88,33 @@ private final class HeadlessTranslationHost {
                 self?.finish(.failure(AppleTranslationError.failed(message)))
             }
         )
+        // The window must be a REAL, visible, on-screen window. Two reasons:
+        // (1) SwiftUI only runs `.onAppear`/`.translationTask` for a view that
+        //     actually lays out — a hidden/zero-alpha window never does, so the
+        //     translation silently hangs. (2) The first translation of a given
+        //     language pair shows a system pack-download confirmation sheet; it
+        //     needs a visible window to attach to and be clicked. We show a small
+        //     "Translating…" card, centered, and tear it down when done.
+        let size = NSSize(width: 230, height: 84)
+        let screen = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let origin = NSPoint(x: screen.midX - size.width / 2,
+                             y: screen.midY - size.height / 2)
         let hosting = NSHostingView(rootView: view)
-        hosting.frame = NSRect(x: 0, y: 0, width: 1, height: 1)
+        hosting.frame = NSRect(origin: .zero, size: size)
 
         let window = NSWindow(
-            contentRect: NSRect(x: -10_000, y: -10_000, width: 1, height: 1),
+            contentRect: NSRect(origin: origin, size: size),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
         window.contentView = hosting
-        window.alphaValue = 0
-        window.ignoresMouseEvents = true
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
         window.level = .floating
-        // The view's `.translationTask`/`.onAppear` only run once the window is
-        // part of the window list. Order it in (it is transparent + off-screen,
-        // so invisible) and keep it parked far off any display.
+        window.collectionBehavior = [.canJoinAllSpaces, .transient]
         window.orderFrontRegardless()
-        window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
         self.window = window
 
         Task { [weak self] in
@@ -128,7 +137,9 @@ private final class HeadlessTranslationHost {
     }
 }
 
-/// 1×1 transparent SwiftUI view whose only job is to carry `.translationTask`.
+/// Small visible "Translating…" card that carries `.translationTask`. Being a
+/// real rendered view is what makes the translation task run and lets the
+/// first-use pack-download sheet attach.
 @available(macOS 15.0, *)
 private struct HeadlessTranslationView: View {
     let sourceText: String
@@ -139,25 +150,38 @@ private struct HeadlessTranslationView: View {
 
     @State private var configuration: TranslationSession.Configuration?
 
+    private var targetLabel: String { TranslationLanguage.named(targetCode).label }
+
     var body: some View {
-        Color.clear
-            .frame(width: 1, height: 1)
-            .translationTask(configuration) { session in
-                do {
-                    // Surfaces the system download prompt for the pair on first
-                    // use, then performs the on-device translation.
-                    try await session.prepareTranslation()
-                    let response = try await session.translate(sourceText)
-                    onResult(response.targetText)
-                } catch {
-                    onError(error.localizedDescription)
-                }
+        VStack(spacing: 10) {
+            ProgressView().controlSize(.small)
+            Text("Translating to \(targetLabel)…")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .translationTask(configuration) { session in
+            DebugLog.shared.log(icon: "🌍", label: "VT-DIAG apple", value: "task fired, preparing", ok: false)
+            do {
+                // Surfaces the system download sheet for the pair on first use,
+                // then performs the on-device translation.
+                try await session.prepareTranslation()
+                DebugLog.shared.log(icon: "🌍", label: "VT-DIAG apple", value: "prepared, translating", ok: false)
+                let response = try await session.translate(sourceText)
+                DebugLog.shared.log(icon: "🌍", label: "VT-DIAG apple", value: "translated len=\(response.targetText.count)", ok: false)
+                onResult(response.targetText)
+            } catch {
+                DebugLog.shared.log(icon: "🌍", label: "VT-DIAG apple", value: "threw: \(error.localizedDescription)", ok: false)
+                onError(error.localizedDescription)
             }
-            .onAppear {
-                let target = Locale.Language(identifier: targetCode)
-                let source = sourceCode.map { Locale.Language(identifier: $0) }
-                configuration = TranslationSession.Configuration(source: source, target: target)
-            }
+        }
+        .onAppear {
+            DebugLog.shared.log(icon: "🌍", label: "VT-DIAG apple", value: "view onAppear, setting config", ok: false)
+            let target = Locale.Language(identifier: targetCode)
+            let source = sourceCode.map { Locale.Language(identifier: $0) }
+            configuration = TranslationSession.Configuration(source: source, target: target)
+        }
     }
 }
 #endif

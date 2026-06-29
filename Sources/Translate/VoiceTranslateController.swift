@@ -27,16 +27,27 @@ final class VoiceTranslateController {
             ?? TranslationLanguage.defaultTargetCode
     }
 
-    /// Translate `transcript` into the configured target language. Source is
-    /// auto-detected. Returns the text to paste. An empty/whitespace transcript
-    /// passes through unchanged (nothing to translate).
+    /// Translate `transcript` into the configured target language. Returns the
+    /// text to paste. An empty/whitespace transcript passes through unchanged.
+    ///
+    /// We detect the source language from the transcript and pass it through:
+    /// Apple's `prepareTranslation()` throws "Unable to Translate" when the
+    /// source is nil because it can't tell which language pair to prepare.
     func translate(_ transcript: String) async throws -> String {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return transcript }
+
+        let detectedSource = LanguageDetector.detect(trimmed)?.code
+
+        // Nothing to do if we're already in the target language.
+        if let detectedSource, TranslationLanguage.sameLanguage(detectedSource, targetCode) {
+            return transcript
+        }
+
         let engine = TranslationEngineFactory.make(engineKind)
         return try await engine.translate(
             text: trimmed,
-            sourceCode: nil,
+            sourceCode: detectedSource,
             targetCode: targetCode
         )
     }

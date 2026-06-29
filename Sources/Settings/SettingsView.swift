@@ -12,6 +12,7 @@ enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
     case ocr           = "Screen Capture"
     case translate     = "Translate"
     case voiceTranslate = "Voice Translate"
+    case languages     = "Languages"
     case audio         = "Audio"
     case hotkey        = "Hotkey"
     case models        = "Models"
@@ -31,6 +32,7 @@ enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
         case .ocr:           "rectangle.dashed.and.paperclip"
         case .translate:     "globe"
         case .voiceTranslate: "globe.badge.chevron.backward"
+        case .languages:     "character.bubble"
         case .audio:         "speaker.wave.3"
         case .hotkey:        "keyboard"
         case .models:        "brain"
@@ -65,6 +67,7 @@ struct SettingsView: View {
                 case .ocr:           OCRSettingsView()
                 case .translate:     TranslateSettingsView()
                 case .voiceTranslate: VoiceTranslateSettingsView()
+                case .languages:     LanguagesSettingsView()
                 case .audio:         AudioSettingsView()
                 case .hotkey:        HotkeySettingsView()
                 case .models:        ModelsSettingsView()

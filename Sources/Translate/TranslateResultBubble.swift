@@ -27,6 +27,10 @@ final class TranslateResultBubble {
     private let sourceText: String
     private let pasteTarget: NSRunningApplication?
     private let onDismiss: () -> Void
+    /// When set, the bubble opens pre-selected to this target language instead
+    /// of the shared `translateTargetLanguage`. Used by Voice Translate so it
+    /// can honor its own default language.
+    private let initialTargetOverride: String?
 
     private var panel: NSPanel?
     private var globalKeyMonitor: Any?
@@ -34,6 +38,7 @@ final class TranslateResultBubble {
     /// Observes `NSWindow.didMoveNotification` so we can persist the
     /// dragged position to UserDefaults — next open returns to that spot.
     private var moveObserver: NSObjectProtocol?
+    private var resizeObserver: NSObjectProtocol?
     private var didDismiss = false
     /// The most recent successful translation. Nil until the first engine
     /// result lands. Used to gate click-to-paste so the footer's "click to
@@ -50,9 +55,11 @@ final class TranslateResultBubble {
 
     init(sourceText: String,
          pasteTarget: NSRunningApplication?,
+         initialTargetOverride: String? = nil,
          onDismiss: @escaping () -> Void) {
         self.sourceText = sourceText
         self.pasteTarget = pasteTarget
+        self.initialTargetOverride = initialTargetOverride
         self.onDismiss = onDismiss
     }
 
@@ -60,12 +67,14 @@ final class TranslateResultBubble {
         if let m = globalKeyMonitor { NSEvent.removeMonitor(m) }
         if let m = localKeyMonitor { NSEvent.removeMonitor(m) }
         if let m = moveObserver { NotificationCenter.default.removeObserver(m) }
+        if let m = resizeObserver { NotificationCenter.default.removeObserver(m) }
     }
 
     // MARK: - Lifecycle
 
     func present() {
-        let initialTarget = UserDefaults.standard.string(forKey: "translateTargetLanguage")
+        let initialTarget = initialTargetOverride
+                         ?? UserDefaults.standard.string(forKey: "translateTargetLanguage")
                          ?? TranslationLanguage.defaultTargetCode
         // Auto-detect the source language and pre-select it in the dropdown.
         // The user can still override via the menu — see `languageMenuPill`.
@@ -90,14 +99,20 @@ final class TranslateResultBubble {
                 UserDefaults.standard.set(code, forKey: "translateTargetLanguage")
             }
         )
+        // Restore the user's last chosen size (resizable), else the default.
+        let bubbleSize = rememberedSize() ?? TranslateBubbleView.bubbleSize
         let hosting = NSHostingView(rootView: view)
-        hosting.frame = NSRect(origin: .zero, size: TranslateBubbleView.bubbleSize)
+        hosting.frame = NSRect(origin: .zero, size: bubbleSize)
         hosting.autoresizingMask = [.width, .height]
+        // The window drives the content size (via autoresizing), not the other
+        // way around. Without this the panel briefly pops/resizes on first
+        // layout before settling.
+        hosting.sizingOptions = []
 
         let p = NSPanel(
-            contentRect: NSRect(origin: positionedOrigin(),
-                                 size: TranslateBubbleView.bubbleSize),
-            styleMask:   [.nonactivatingPanel, .fullSizeContentView, .borderless],
+            contentRect: NSRect(origin: positionedOrigin(size: bubbleSize),
+                                 size: bubbleSize),
+            styleMask:   [.nonactivatingPanel, .fullSizeContentView, .borderless, .resizable],
             backing:     .buffered,
             defer:       false
         )
@@ -108,6 +123,8 @@ final class TranslateResultBubble {
         p.hasShadow                   = true
         p.collectionBehavior          = [.canJoinAllSpaces, .fullScreenAuxiliary]
         p.contentView                 = hosting
+        p.minSize                     = TranslateBubbleView.minBubbleSize
+        p.maxSize                     = TranslateBubbleView.maxBubbleSize
         p.alphaValue                  = 0
         // Free-form dragging. `isMovableByWindowBackground` makes any
         // click-and-drag on the borderless panel reposition it; a plain
@@ -129,10 +146,29 @@ final class TranslateResultBubble {
             self?.saveOrigin(panel.frame.origin)
         }
 
+        // Persist the size whenever the user resizes the panel, so the next open
+        // reuses it (origin is saved separately on move).
+        resizeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResizeNotification,
+            object: p,
+            queue: .main
+        ) { [weak self] _ in
+            guard let panel = self?.panel else { return }
+            self?.saveSize(panel.frame.size)
+            self?.saveOrigin(panel.frame.origin)
+        }
+
+        // Order in while invisible, let SwiftUI complete its first layout pass,
+        // then fade in on the next runloop tick — so any initial size/position
+        // settle happens at alpha 0 and isn't seen as a jump.
         p.orderFront(nil)
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.18
-            p.animator().alphaValue = 1
+        p.layoutIfNeeded()
+        DispatchQueue.main.async { [weak p] in
+            guard let p else { return }
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.18
+                p.animator().alphaValue = 1
+            }
         }
 
         installDismissalMonitors()
@@ -209,15 +245,36 @@ final class TranslateResultBubble {
     private enum PositionKeys {
         static let originX = "translateBubbleOriginX"
         static let originY = "translateBubbleOriginY"
+        static let width   = "translateBubbleWidth"
+        static let height  = "translateBubbleHeight"
+    }
+
+    /// Returns the last user-chosen bubble size, clamped to the allowed range,
+    /// or nil if the user has never resized it.
+    private func rememberedSize() -> NSSize? {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: PositionKeys.width) != nil,
+              defaults.object(forKey: PositionKeys.height) != nil else { return nil }
+        let minS = TranslateBubbleView.minBubbleSize
+        let maxS = TranslateBubbleView.maxBubbleSize
+        let w = min(max(defaults.double(forKey: PositionKeys.width),
+                        Double(minS.width)), Double(maxS.width))
+        let h = min(max(defaults.double(forKey: PositionKeys.height),
+                        Double(minS.height)), Double(maxS.height))
+        return NSSize(width: w, height: h)
+    }
+
+    private func saveSize(_ size: NSSize) {
+        let defaults = UserDefaults.standard
+        defaults.set(Double(size.width), forKey: PositionKeys.width)
+        defaults.set(Double(size.height), forKey: PositionKeys.height)
     }
 
     /// Returns where the bubble should appear on present. Priority:
     /// 1. A previously remembered position (if it still fits on some screen)
     /// 2. Docked to the right edge of the screen the cursor is on
     /// 3. A fallback `(200, 200)` if the screen list is empty
-    private func positionedOrigin() -> NSPoint {
-        let size = TranslateBubbleView.bubbleSize
-
+    private func positionedOrigin(size: CGSize = TranslateBubbleView.bubbleSize) -> NSPoint {
         if let remembered = rememberedOriginIfVisible(size: size) {
             return remembered
         }
@@ -368,6 +425,8 @@ private struct TranslateBubbleView: View {
     static let bubbleHeight: CGFloat = 500
     static let cornerRadius: CGFloat = 18
     static let bubbleSize            = CGSize(width: bubbleWidth, height: bubbleHeight)
+    static let minBubbleSize         = NSSize(width: 360, height: 260)
+    static let maxBubbleSize         = NSSize(width: 1200, height: 1000)
 
     init(sourceText: String,
          initialDetectedCode: String?,
@@ -403,7 +462,8 @@ private struct TranslateBubbleView: View {
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
-        .frame(width: Self.bubbleWidth, height: Self.bubbleHeight)
+        .frame(minWidth: Self.minBubbleSize.width, maxWidth: .infinity,
+               minHeight: Self.minBubbleSize.height, maxHeight: .infinity)
         .background(
             RoundedRectangle(cornerRadius: Self.cornerRadius)
                 .fill(Color(white: 0.10, opacity: 0.94))
@@ -546,7 +606,7 @@ private struct TranslateBubbleView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
         }
-        .frame(maxHeight: 190)
+        .frame(maxHeight: .infinity)
     }
 
     @ViewBuilder
@@ -574,7 +634,7 @@ private struct TranslateBubbleView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
             }
-            .frame(maxHeight: 250)
+            .frame(maxHeight: .infinity)
 
         case .sameLanguage:
             VStack(alignment: .leading, spacing: 4) {
@@ -586,8 +646,9 @@ private struct TranslateBubbleView: View {
                 Text("Source matches target — original copied")
                     .font(.system(size: 10))
                     .foregroundColor(.white.opacity(0.45))
+                Spacer(minLength: 0)
             }
-            .frame(maxHeight: 250)
+            .frame(maxHeight: .infinity)
 
         case .error(let message):
             VStack(alignment: .leading, spacing: 6) {
