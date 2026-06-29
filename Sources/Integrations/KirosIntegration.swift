@@ -98,8 +98,10 @@ struct KirosIntegration {
             return 200
         }
 
+        // capturedAt = the meeting date: the server maps it to `added`, the
+        // anchor for aging/avoidance — the meeting day, not the import moment.
         let response = try await client.postTasks(
-            makeRequest(meeting: meeting, tasks: tasks, capturedAt: Date()))
+            makeRequest(meeting: meeting, tasks: tasks, capturedAt: meeting.createdAt))
         DebugLog.shared.log(icon: "🗂️", label: "Kiros filed",
                             value: "created \(response.created), skipped \(response.skipped)")
         return 200

@@ -20,6 +20,14 @@ struct IntegrationsSettingsView: View {
     @State private var hermesSecret: String = ""
     @State private var hermesSecretVisible = false
 
+    @AppStorage("kirosEnabled")     private var kirosEnabled = false
+    @AppStorage("kirosURL")         private var kirosURL = "https://kairos.solay.cloud"
+    @AppStorage("kirosIdentities")  private var kirosIdentities = ""
+    @State private var kirosToken: String = ""
+    @State private var kirosTokenVisible = false
+    @State private var kirosTesting = false
+    @State private var kirosTestResult: String?
+
     var body: some View {
         Form {
             Section {
@@ -46,6 +54,36 @@ struct IntegrationsSettingsView: View {
                 Toggle("Include summary markdown",    isOn: $hermesIncludeSummary)
             } header: { Text("Hermes (your VPS)") } footer: {
                 Text("POST JSON to webhook URL with HMAC-SHA256 signature in `X-Webhook-Signature`. Stored in Keychain.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            Section {
+                Toggle("Enabled", isOn: $kirosEnabled)
+                TextField("API endpoint", text: $kirosURL)
+                    .textFieldStyle(.roundedBorder)
+                APIKeyField(label: "Bearer token",
+                            text: Binding(
+                                get: { kirosToken },
+                                set: { newValue in
+                                    kirosToken = newValue
+                                    try? KeychainStore.set(newValue, forKey: KirosIntegration.tokenKeychainKey)
+                                }
+                            ),
+                            visible: $kirosTokenVisible)
+                TextField("My name / aliases (comma-separated)", text: $kirosIdentities)
+                    .textFieldStyle(.roundedBorder)
+                HStack(spacing: 8) {
+                    Button("Test connection") { testKiros() }
+                        .disabled(kirosTesting
+                                  || kirosURL.trimmingCharacters(in: .whitespaces).isEmpty
+                                  || kirosToken.isEmpty)
+                    if kirosTesting { ProgressView().controlSize(.small) }
+                    if let kirosTestResult {
+                        Text(kirosTestResult).font(.caption).foregroundColor(.secondary)
+                    }
+                }
+            } header: { Text("Kiros") } footer: {
+                Text("Extracts your action items from each summary and files them into the Kiros inbox (POST /api/ingest/tasks; bearer token in Keychain). \"Identities\" decide which tasks count as yours — your display name plus any aliases above.")
                     .font(.caption).foregroundColor(.secondary)
             }
 
@@ -93,6 +131,7 @@ struct IntegrationsSettingsView: View {
         .navigationTitle("Integrations")
         .onAppear {
             hermesSecret = (try? KeychainStore.string(forKey: "hermesSecret")) ?? ""
+            kirosToken = (try? KeychainStore.string(forKey: KirosIntegration.tokenKeychainKey)) ?? ""
         }
         .sheet(item: $editingWebhook) { hook in
             WebhookEditorSheet(webhook: hook,
@@ -117,6 +156,40 @@ struct IntegrationsSettingsView: View {
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url {
             obsidianVaultPath = url.path
+        }
+    }
+
+    /// Hit GET /api/ingest/fronts with the current URL + token and report the result.
+    /// A quick way to confirm the bearer token works before relying on auto-filing.
+    private func testKiros() {
+        guard let url = URL(string: kirosURL.trimmingCharacters(in: .whitespaces)),
+              !kirosToken.isEmpty else {
+            kirosTestResult = "Set a URL and token first."
+            return
+        }
+        kirosTesting = true
+        kirosTestResult = nil
+        Task {
+            let client = KirosClient(baseURL: url, token: kirosToken)
+            do {
+                let fronts = try await client.fetchFronts()
+                kirosTestResult = "Connected · \(fronts.companies.count) companies, \(fronts.fronts.count) fronts"
+            } catch let error as KirosClientError {
+                kirosTestResult = "Failed: \(Self.describe(error))"
+            } catch {
+                kirosTestResult = "Failed: \(error.localizedDescription)"
+            }
+            kirosTesting = false
+        }
+    }
+
+    private static func describe(_ error: KirosClientError) -> String {
+        switch error {
+        case .unauthorized:        return "bad token (401)"
+        case .rateLimited:         return "rate limited (429)"
+        case .http(let status):    return "HTTP \(status)"
+        case .decoding:            return "unexpected response"
+        case .transport(let msg):  return msg
         }
     }
 }
