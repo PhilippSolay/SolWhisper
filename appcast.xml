@@ -3,6 +3,47 @@
   <channel>
     <title>SolWhisper Updates</title>
     <language>en</language>    <item>
+      <title>Version 0.7.1</title>
+      <pubDate>Mon, 29 Jun 2026 19:16:56 +0800</pubDate>
+      <sparkle:version>29712196</sparkle:version>
+      <sparkle:shortVersionString>0.7.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+# SolWhisper v0.7.1
+
+Speak in one language, paste in another. **Voice Translate** lands as a sibling to STT Short dictation.
+
+## What's new
+
+- 🌍 **Voice Translate dictation** — hold a dedicated global hotkey, speak, and on release SolWhisper transcribes your speech and pastes the **translation in your chosen target language** instead of the raw transcript. Same muscle memory as STT Short, different output.
+- 🈳 **Pick your target language** — choose the language from a dropdown, with a configurable default in Settings.
+- 🧠 **Two translation engines** — **Apple Translation** (on-device, private; downloads language packs per pair on first use) or an **AI model** (cloud, via your configured provider). The UI reflects per-engine availability and degrades gracefully when a language isn't ready.
+- 📦 **Language-pack management** — a new Settings panel shows each curated language's on-device status with one-click Download (removal deep-links to System Settings, which is where macOS allows it).
+- 🗣 **Expanded language set** — Farsi, Japanese, Russian, German, Italian, Korean, Chinese and more, from a single source-of-truth list so adding a language is a one-line change.
+
+## Also in the 0.7.x line (from 0.7.0)
+
+- 🗜 Meeting recordings stored as mono AAC (~30× smaller) with a safe one-time disk-reclaiming migration.
+- 🎛 Focused processing view that refreshes in place when a meeting finishes.
+- 👥 Voice-profile backfill that reliably graduates name-only profiles to stored voiceprints.
+
+## Compatibility & known limitations
+
+- **macOS 14+** required (Apple Translation needs the Translation framework).
+- **Notarization** — signed but **not yet notarized**. macOS may warn on first launch; right-click → Open the first time. Auto-update via Sparkle may reset permission grants until a notarized build ships.
+
+## Upgrade
+
+- **Sparkle auto-update** — installed users are prompted automatically once the appcast updates.
+- **Fresh install** — download the DMG from the GitHub release page.
+- **Settings & history preserved** — model configs, skill packs, voice profiles, and meeting history carry forward unchanged.
+      ]]></description>
+      <enclosure url="https://github.com/PhilippSolay/SolWhisper/releases/download/v0.7.1/SolWhisper-v0.7.1.dmg"
+                 sparkle:edSignature="gcM4oOc5umYi9FTypUn8HSmWipDV1H4SSAzQMgCyM8Wlr1cXIoZf6eZ1IbV8lA+HdjGomSYha+PQODofbqgdCQ=="
+                 length="11157082"
+                 type="application/octet-stream"/>
+    </item>
+    <item>
       <title>Version 0.7.0</title>
       <pubDate>Mon, 29 Jun 2026 17:55:30 +0800</pubDate>
       <sparkle:version>29712114</sparkle:version>

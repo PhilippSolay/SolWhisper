@@ -3,6 +3,12 @@
   "items": [
     {
       "date": "2026-06-29",
+      "version": "0.7.1",
+      "title": "Voice Translate",
+      "body": "Hold a hotkey, speak, and paste the translation in your target language. On-device (Apple) or AI-model translation, with a curated, expandable language list."
+    },
+    {
+      "date": "2026-06-29",
       "version": "0.7.0",
       "title": "Lighter meeting recordings",
       "body": "Recordings now store as mono AAC \u2014 about 30\u00d7 smaller \u2014 and a one-time pass safely recompresses your existing meetings to reclaim the space."
