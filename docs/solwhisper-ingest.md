@@ -1,9 +1,21 @@
 # SolWhisper → Kiros task ingest — dev plan
 
-**Status:** proposed · **Owner:** Philipp · **Scope:** Kiros backend only (Python).
-**Companion:** SolWhisper emits structured tasks and POSTs them here (Route 2). This
-doc specifies *everything Kiros must build*; the SolWhisper side is out of scope (see
-"Hand-off" at the end).
+**Status:** ✅ shipped (K1–K5), 2026-06-29 · **Owner:** Philipp · **Scope:** Kiros backend
+only (Python). **Companion:** SolWhisper emits structured tasks and POSTs them here
+(Route 2). This doc specifies *everything Kiros must build*; the SolWhisper side is out
+of scope (see "Hand-off" at the end). The **API contract below is frozen** — build the
+SolWhisper side against it. Tests live in `test_ingest.py`; deploy/curl notes in `DEPLOY.md`.
+
+**Decisions made during the build (deltas from the original draft):**
+- **Description = per-task note only.** `meeting_title`/`captured_at` are *not* woven into
+  the stored description; the `url` (`solwhisper:<meeting_id>:<idx>`) is the meeting record.
+- **`captured_at` → `added`.** Aging/avoidance anchor to the meeting date (falls back to
+  today if absent), not the import day.
+- **Extractor importance/urgency suppressed on day one.** Validated to 1–5 but not applied
+  (tasks inherit their front) while `TRUST_INGEST_PRIORITY = False` in `kiros_web.py` — a
+  one-line flip once the extraction is trusted.
+- **Idempotency scans every lane incl. Done.** A re-POST of an already-completed meeting
+  task returns `duplicate`, not a fresh inbox item.
 
 ## Goal
 
@@ -170,11 +182,10 @@ never auto-creates. Unit-tested as a pure function (no I/O).
 - CSRF-exemption: ingest succeeds with no CSRF cookie; a session endpoint still needs it.
 - rate limit: `MAX+1` calls → `429`.
 
-## Open decision (genuinely yours)
+## Open decision — RESOLVED
 
-- **Unmapped tasks:** default = land in inbox with `project`→`group` + description (fits
-  weekly triage). Alternative = an opt-in "auto-create front from company/category"
-  toggle. Recommend shipping the default; add the toggle only if triage proves noisy.
+- **Unmapped tasks:** ✅ **shipped the default** — land in inbox with `project`→`group` +
+  description, taxonomy untouched. No auto-create toggle (revisit only if triage proves noisy).
 
 ## Hand-off (SolWhisper side — not built here)
 
