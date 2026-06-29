@@ -37,6 +37,7 @@ struct IntegrationFanout {
     static var enabledNames: [String] {
         var names: [String] = []
         if HermesIntegration.isEnabled   { names.append("Hermes") }
+        if KirosIntegration.isEnabled    { names.append("Kiros") }
         if ObsidianIntegration.isEnabled { names.append("Obsidian") }
         for hook in CustomWebhookStore.shared.enabled {
             names.append(hook.name)
@@ -73,6 +74,27 @@ struct IntegrationFanout {
             }
         } else {
             skipped.append("Hermes")
+        }
+
+        if KirosIntegration.isEnabled {
+            do {
+                let status = try await KirosIntegration.send(
+                    meeting: meeting,
+                    transcriptMarkdown: transcriptMarkdown,
+                    summaryMarkdown: summaryMarkdown
+                )
+                let ok = status < 400
+                DebugLog.shared.log(icon: "🗂️", label: "Kiros sent",
+                                    value: status == -1 ? "skipped (unconfigured)" : "HTTP \(status)",
+                                    ok: ok)
+                if ok { sent.append("Kiros") } else { failed.append("Kiros") }
+            } catch {
+                DebugLog.shared.log(icon: "🗂️", label: "Kiros failed",
+                                    value: "\(error)", ok: false)
+                failed.append("Kiros")
+            }
+        } else {
+            skipped.append("Kiros")
         }
 
         if ObsidianIntegration.isEnabled {
