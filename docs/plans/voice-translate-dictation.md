@@ -141,6 +141,23 @@ then `xcodebuild ... build`, fix errors before moving on.
 7. **Manual verify** — run app, exercise new hotkey end-to-end for Apple +
    LLM engines and 2–3 languages incl. one needing download.
 
+## Verification status
+
+- ✅ **Build**: `xcodebuild … build` green after every phase.
+- ✅ **Unit tests**: 16 offline/deterministic tests pass (language-list
+  integrity + expanded languages, readiness hints, provider-class LLM
+  availability incl. `modelDependent`, controller defaults + passthrough).
+- ✅ **App smoke test**: the worktree Debug build launches without a startup
+  crash (hidden launch, 5 s, clean quit).
+- ⚠️ **Human verification still required** — the headless `AppleTranslationEngine`
+  is wired but cannot be exercised offline/in CI: it needs a real mic session
+  (speech capture) **and** a downloaded on-device language pack for the chosen
+  pair. To confirm end-to-end: assign the Voice Translate hotkey in Settings →
+  Hotkey, pick a target language in Settings → Voice Translate (Apple engine),
+  speak, and confirm the translated text pastes (first use of a pair triggers
+  the macOS ~50 MB pack download prompt). Also confirm the LLM engine path with
+  a configured cloud model.
+
 ## Constraints / coding standards
 - Immutability; small files (<400 lines), small funcs (<50 lines).
 - Explicit error handling, user-friendly messages, no silent failures.
