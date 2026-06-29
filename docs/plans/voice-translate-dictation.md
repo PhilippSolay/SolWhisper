@@ -27,11 +27,23 @@ This reuses two existing subsystems already in the codebase:
 4. **Engine ("TTS model") switching matters.** Two engines exist: **Apple
    Translation** (on-device; downloads ~50 MB language packs per pair on first
    use via `TranslationSession.prepareTranslation()`) and **AI model / LLM**
-   (cloud, no download, handles any pair). Language *availability/downloads are
-   Apple-only*; the LLM engine covers everything. The dropdown + settings must
-   reflect per-engine availability and **degrade gracefully** (a language Apple
-   can't do on-device should still work via LLM, or be clearly marked
-   "needs download / LLM only").
+   (cloud, no download). Language *availability/downloads are Apple-only*. The
+   dropdown + settings must reflect per-engine availability and **degrade
+   gracefully**.
+
+   **Supported languages depend on the selected model (checked).** There is no
+   per-model language metadata in the codebase — models are user-configured
+   (`ModelStore`, any provider + free-text model IDs), so an LLM's language
+   coverage is not programmatically enumerable. A static per-model table would
+   be brittle and stale. Decision: answer readiness by **provider class** of the
+   resolved translation model instead:
+   - **Apple** → exact, via `LanguageAvailability`: `ready` / `needs download` /
+     `not available`.
+   - **LLM, frontier cloud** (Anthropic/OpenAI/Google/Groq/OpenRouter) → `ready`.
+   - **LLM, local Ollama** → `depends on model` (coverage varies by model size).
+   - **LLM, custom / no model configured** → `not available` (unroutable).
+   `LanguageReadiness` carries a `.modelDependent` case + a `hint` string the
+   settings dropdown renders next to each language.
 
 ## Key files (verified)
 

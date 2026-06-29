@@ -23,6 +23,17 @@ enum LanguageReadiness: Equatable, Sendable {
     case ready          // usable right now, no action needed
     case needsDownload  // supported but the on-device pack must download first
     case unsupported    // this engine can't translate into the language
+    case modelDependent // LLM engine on a model whose coverage we can't verify
+
+    /// Short annotation shown next to a language in settings. `nil` = no badge.
+    var hint: String? {
+        switch self {
+        case .ready:          return nil
+        case .needsDownload:  return "needs download"
+        case .unsupported:    return "not available"
+        case .modelDependent: return "depends on model"
+        }
+    }
 }
 
 /// Builds the headless engine for the user's chosen engine kind.
@@ -52,16 +63,19 @@ enum TranslationAvailability {
 
     /// Readiness of `targetCode` for `engine`.
     ///
-    /// The LLM engine handles every curated language with no download, so it is
-    /// always `.ready`. The Apple engine consults `LanguageAvailability`; since
-    /// the user hasn't spoken yet when settings render, we approximate the
-    /// source with the current UI locale language — good enough for a hint
-    /// (the real pair is resolved at translate time with the detected source).
+    /// The Apple engine consults `LanguageAvailability` (since the user hasn't
+    /// spoken yet when settings render, we approximate the source with the
+    /// current UI locale language — good enough for a hint; the real pair is
+    /// resolved at translate time with the detected source).
+    ///
+    /// The LLM engine has no per-model language metadata to query — coverage is
+    /// model-dependent. We answer by *provider class* of the resolved
+    /// translation model rather than a brittle per-language table.
     static func readiness(for targetCode: String,
                           engine: TranslationEngineKind) async -> LanguageReadiness {
         switch engine {
         case .llm:
-            return .ready
+            return llmReadiness()
         case .apple:
             #if canImport(Translation)
             if #available(macOS 15.0, *) {
@@ -69,6 +83,19 @@ enum TranslationAvailability {
             }
             #endif
             return .unsupported
+        }
+    }
+
+    /// LLM coverage isn't enumerable per language, so we classify by the
+    /// resolved translation model's provider:
+    /// - no model / custom (unroutable) → `.unsupported`
+    /// - local Ollama (varies by model size) → `.modelDependent`
+    /// - frontier cloud providers → `.ready`
+    private static func llmReadiness() -> LanguageReadiness {
+        guard let resolved = LLMResolver.resolve(.translation) else { return .unsupported }
+        switch resolved.providerLabel {
+        case "ollama": return .modelDependent
+        default:       return .ready
         }
     }
 
