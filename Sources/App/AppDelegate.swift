@@ -41,6 +41,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }()
     private(set) lazy var snipperController = ScreenSnipperController()
     private(set) lazy var translationController = TranslationController()
+    let voiceTranslateController = VoiceTranslateController()
+    /// True while the active recording session should translate its transcript
+    /// before pasting (voice-translate mode) rather than paste it verbatim.
+    private var isVoiceTranslateActive = false
     private var meetingMenuItem: NSMenuItem?
     private var audioMenuItem: NSMenuItem?
     private var audioSubmenuRef: NSMenu?
@@ -74,6 +78,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             "translateHotkeyKeyCode":        37,  // L — Translate from screen
             "translateHotkeyModifierMask":   11,  // ⌃⌥⌘
             "translateTargetLanguage":       "en",
+            // Voice-translate (speak → transcribe → translate → paste). Hotkey
+            // ships unset (user assigns it in Settings → Hotkey). Apple is the
+            // default engine per the "Apple first" brief; factory falls back to
+            // LLM automatically when Apple Translation is unavailable (<macOS 15).
+            "voiceTranslateEngine":          TranslationEngineKind.apple.rawValue,
+            "voiceTranslateTargetLanguage":  "en",
             // Translate engine + routing — registered alongside the existing
             // role defaults so a fresh install has the same fallback shape
             // as dictation / cleanup / summary. Engine default left as the
@@ -548,11 +558,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.translateScreenText()
             }
         }
+        hotkeyManager?.onVoiceTranslateHotkeyPressed = { [weak self] in
+            Task { @MainActor in
+                self?.toggleVoiceTranslate()
+            }
+        }
         hotkeyManager?.startListening()
     }
 
     @objc func translateScreenText() {
         translationController.translate()
+    }
+
+    /// Voice-translate hotkey: press to start, press again to stop. Mirrors
+    /// `toggleRecording`, but the active session translates before pasting.
+    /// Ignored if a plain dictation session is already running.
+    @objc func toggleVoiceTranslate() {
+        if transcriptionController.isRecording {
+            if isVoiceTranslateActive {
+                stopRecording()
+            } else {
+                DebugLog.shared.log(icon: "🌍", label: "Voice-translate ignored",
+                                    value: "dictation in progress")
+            }
+        } else {
+            startRecording(voiceTranslate: true)
+        }
     }
 
     @objc func snipScreenText() {
@@ -571,7 +602,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// `durationSeconds` for the history entry.
     private var recordingStartedAt: Date?
 
-    func startRecording() {
+    func startRecording(voiceTranslate: Bool = false) {
+        isVoiceTranslateActive = voiceTranslate
         // Snapshot the frontmost app RIGHT NOW — before the overlay appears.
         // pasteTarget (notification-based) is a fallback; frontmostApplication is
         // more reliable when triggered via hotkey while the user is in another app.
@@ -620,6 +652,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         recordingStartedAt = nil
         let backend = UserDefaults.standard.string(forKey: "transcriptionBackend") ?? "apple"
 
+        // Capture + reset the voice-translate flag now so the next session
+        // starts clean regardless of how this one ends.
+        let translateActive = isVoiceTranslateActive
+        isVoiceTranslateActive = false
+
         AudioFeedback.play(.stop)
         PlaybackController.recordingDidEnd()
 
@@ -633,29 +670,44 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     return
                 }
 
+                // Voice-translate mode: translate the transcript before pasting.
+                // On failure we fall back to the raw transcript so the user is
+                // never left empty-handed, and surface the error in the log.
+                var outputText = text
+                if translateActive, let self {
+                    do {
+                        outputText = try await self.voiceTranslateController.translate(text)
+                        DebugLog.shared.log(icon: "🌍", label: "Voice-translate done",
+                                            value: "→ \(self.voiceTranslateController.targetCode) via \(self.voiceTranslateController.engineKind.rawValue)")
+                    } catch {
+                        DebugLog.shared.log(icon: "🌍", label: "Voice-translate failed",
+                                            value: error.localizedDescription, ok: false)
+                        outputText = text
+                    }
+                }
+
                 // Let the window server fully remove the panel before pasting
                 try? await Task.sleep(nanoseconds: 100_000_000)
 
                 // Always copy to clipboard so the user can ⌘V manually if
                 // auto-paste is off OR the paste fails. Additive-clipboard
                 // mode appends instead of replacing.
-                let pasteboardText = AdditiveClipboard.shared.write(text)
+                let pasteboardText = AdditiveClipboard.shared.write(outputText)
 
                 let autoPaste = (UserDefaults.standard.object(forKey: "dictationAutoPaste") as? Bool) ?? true
                 if autoPaste {
                     await PasteManager.paste(text: pasteboardText, into: target)
                 }
 
-                // Record into dictation history. We don't have the *raw* text
-                // separately — TranscriptionController calls back with polished
-                // text. For now polished == original; when CleanupPass starts
-                // exposing both, expand this to capture both.
+                // Record into dictation history. For voice-translate the raw
+                // transcript is the "original" and the translation is what we
+                // pasted ("polished" slot); for plain dictation both match.
                 let duration = startedAt.map { Date().timeIntervalSince($0) } ?? 0
                 DictationHistoryStore.shared.record(DictationEntry(
                     durationSeconds: duration,
                     backend: backend,
                     originalText: text,
-                    polishedText: text,
+                    polishedText: outputText,
                     targetAppBundleID: target?.bundleIdentifier,
                     targetAppName: target?.localizedName
                 ))
@@ -665,6 +717,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func cancelRecording() {
         removeEscMonitor()
+        isVoiceTranslateActive = false
         transcriptionController.cancel()
         overlayWindowController?.hideOverlay()
         updateStatusBarIcon(recording: false)
