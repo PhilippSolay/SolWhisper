@@ -147,6 +147,16 @@ then `xcodebuild ... build`, fix errors before moving on.
 - MainActor isolation for UI updates; async/await for capture + translate.
 - No new dependencies; no network beyond the existing LLM routing.
 
+## Sequencing decision — Apple engine first (per Philipp)
+- **v1 default engine = Apple** on-device Translation. `voiceTranslateEngine`
+  UserDefaults defaults to `apple` (factory falls back to LLM only when Apple is
+  unavailable, i.e. macOS < 15).
+- Get the **Apple path working + verified end-to-end** (hotkey → STT → headless
+  Apple translate → paste) before fleshing out the LLM engine UX. The headless
+  Apple host (`AppleTranslationEngine`) is the riskiest piece — Phase 7 manual
+  verify must confirm it actually produces output in a real app run.
+- Output stays **pasted text** (no spoken audio / AVSpeechSynthesizer — confirmed).
+
 ## Open decisions (sensible defaults chosen, revisit if needed)
 - **Separate engine + hotkey + default-language keys** from Translate-from-screen
   (chosen: separate, so the two features are independent).

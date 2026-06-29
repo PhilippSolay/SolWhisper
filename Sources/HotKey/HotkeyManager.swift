@@ -17,23 +17,27 @@ class HotkeyManager {
     var onTranscriptsHotkeyPressed: (() -> Void)?
     /// Triggers the screen-Translate flow (capture region → OCR → bubble).
     var onTranslateHotkeyPressed: (() -> Void)?
+    /// Triggers the voice-Translate flow (speak → transcribe → translate → paste).
+    var onVoiceTranslateHotkeyPressed: (() -> Void)?
 
-    private var hotKeyRef:            EventHotKeyRef?
-    private var pauseHotKeyRef:       EventHotKeyRef?
-    private var snipHotKeyRef:        EventHotKeyRef?
-    private var meetingHotKeyRef:     EventHotKeyRef?
-    private var transcriptsHotKeyRef: EventHotKeyRef?
-    private var translateHotKeyRef:   EventHotKeyRef?
-    private var eventHandlerRef:      EventHandlerRef?
+    private var hotKeyRef:              EventHotKeyRef?
+    private var pauseHotKeyRef:         EventHotKeyRef?
+    private var snipHotKeyRef:          EventHotKeyRef?
+    private var meetingHotKeyRef:       EventHotKeyRef?
+    private var transcriptsHotKeyRef:   EventHotKeyRef?
+    private var translateHotKeyRef:     EventHotKeyRef?
+    private var voiceTranslateHotKeyRef: EventHotKeyRef?
+    private var eventHandlerRef:        EventHandlerRef?
     private var defaultsObserver: Any?
 
     /// Track last-registered values to avoid redundant re-registration
-    private var lastRecordKey:      (Int, Int) = (0, 0)
-    private var lastPauseKey:       (Int, Int) = (0, 0)
-    private var lastSnipKey:        (Int, Int) = (0, 0)
-    private var lastMeetingKey:     (Int, Int) = (0, 0)
-    private var lastTranscriptsKey: (Int, Int) = (0, 0)
-    private var lastTranslateKey:   (Int, Int) = (0, 0)
+    private var lastRecordKey:         (Int, Int) = (0, 0)
+    private var lastPauseKey:          (Int, Int) = (0, 0)
+    private var lastSnipKey:           (Int, Int) = (0, 0)
+    private var lastMeetingKey:        (Int, Int) = (0, 0)
+    private var lastTranscriptsKey:    (Int, Int) = (0, 0)
+    private var lastTranslateKey:      (Int, Int) = (0, 0)
+    private var lastVoiceTranslateKey: (Int, Int) = (0, 0)
 
     // MARK: - Start / Stop
 
@@ -58,6 +62,7 @@ class HotkeyManager {
         if let ref = meetingHotKeyRef     { UnregisterEventHotKey(ref); meetingHotKeyRef     = nil }
         if let ref = transcriptsHotKeyRef { UnregisterEventHotKey(ref); transcriptsHotKeyRef = nil }
         if let ref = translateHotKeyRef   { UnregisterEventHotKey(ref); translateHotKeyRef   = nil }
+        if let ref = voiceTranslateHotKeyRef { UnregisterEventHotKey(ref); voiceTranslateHotKeyRef = nil }
         if let ref = eventHandlerRef      { RemoveEventHandler(ref);     eventHandlerRef      = nil }
         if let obs = defaultsObserver      { NotificationCenter.default.removeObserver(obs) }
     }
@@ -99,6 +104,8 @@ class HotkeyManager {
                         mgr.onTranscriptsHotkeyPressed?()
                     } else if hkID.id == 6 {
                         mgr.onTranslateHotkeyPressed?()
+                    } else if hkID.id == 7 {
+                        mgr.onVoiceTranslateHotkeyPressed?()
                     }
                 }
                 return noErr
@@ -123,6 +130,8 @@ class HotkeyManager {
         let tmask = UserDefaults.standard.integer(forKey: "transcriptsHotkeyModifierMask")
         let xkc   = UserDefaults.standard.integer(forKey: "translateHotkeyKeyCode")
         let xmask = UserDefaults.standard.integer(forKey: "translateHotkeyModifierMask")
+        let vkc   = UserDefaults.standard.integer(forKey: "voiceTranslateHotkeyKeyCode")
+        let vmask = UserDefaults.standard.integer(forKey: "voiceTranslateHotkeyModifierMask")
 
         let rec  = (kc, mask)
         let pau  = (pkc, pmask)
@@ -130,10 +139,12 @@ class HotkeyManager {
         let meet = (mkc, mmask)
         let trans = (tkc, tmask)
         let xlate = (xkc, xmask)
+        let vxlate = (vkc, vmask)
         guard rec != lastRecordKey || pau != lastPauseKey
               || snip != lastSnipKey || meet != lastMeetingKey
               || trans != lastTranscriptsKey
-              || xlate != lastTranslateKey else { return }
+              || xlate != lastTranslateKey
+              || vxlate != lastVoiceTranslateKey else { return }
         registerHotKeys()
     }
 
@@ -145,6 +156,7 @@ class HotkeyManager {
         if let ref = meetingHotKeyRef     { UnregisterEventHotKey(ref); meetingHotKeyRef     = nil }
         if let ref = transcriptsHotKeyRef { UnregisterEventHotKey(ref); transcriptsHotKeyRef = nil }
         if let ref = translateHotKeyRef   { UnregisterEventHotKey(ref); translateHotKeyRef   = nil }
+        if let ref = voiceTranslateHotKeyRef { UnregisterEventHotKey(ref); voiceTranslateHotKeyRef = nil }
 
         // Record hotkey
         let kc   = UserDefaults.standard.integer(forKey: "hotkeyKeyCode")
@@ -249,6 +261,25 @@ class HotkeyManager {
                 DebugLog.shared.log(icon: "⌨️",
                                     label: "Translate hotkey: keyCode=\(xlateKey) mods=\(xlateMod)",
                                     ok: xerr == noErr)
+            }
+        }
+
+        // Voice-Translate hotkey — same shape as translate/snip: ships unset,
+        // only registers when the user has explicitly picked one. Hotkey ID 7
+        // is reserved for voice-translate; matches `onVoiceTranslateHotkeyPressed`.
+        let vkc   = UserDefaults.standard.integer(forKey: "voiceTranslateHotkeyKeyCode")
+        let vmask = UserDefaults.standard.integer(forKey: "voiceTranslateHotkeyModifierMask")
+        lastVoiceTranslateKey = (vkc, vmask)
+        if vkc > 0 && vmask > 0 {
+            var voiceID = EventHotKeyID(signature: 0x5357_4853, id: 7)
+            let voiceKey = UInt32(vkc)
+            let voiceMod = carbonModifiers(vmask)
+            let verr = RegisterEventHotKey(voiceKey, voiceMod, voiceID,
+                                           GetApplicationEventTarget(), 0, &voiceTranslateHotKeyRef)
+            Task { @MainActor in
+                DebugLog.shared.log(icon: "⌨️",
+                                    label: "Voice-Translate hotkey: keyCode=\(voiceKey) mods=\(voiceMod)",
+                                    ok: verr == noErr)
             }
         }
     }
