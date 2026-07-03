@@ -617,28 +617,23 @@ struct APIKeyField: View {
     @Binding var text: String
     @Binding var visible: Bool
 
-    private var displayText: Binding<String> {
-        Binding(
-            get: { visible ? text : String(repeating: "•", count: min(text.count, 32)) },
-            set: { _ in }
-        )
-    }
-
     var body: some View {
         HStack(spacing: 6) {
-            ZStack {
-                TextField(label, text: $text)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
-                    .opacity(visible ? 1 : 0)
-                if !visible {
-                    TextField(label, text: displayText)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundColor(.secondary)
-                        .allowsHitTesting(false)
+            // A real TextField when revealed, a native SecureField when masked.
+            // Both are genuine, focusable fields bound to the same `text`, so
+            // ⌘C/⌘V work and there is no invisible opacity-0 layer to type into.
+            Group {
+                if visible {
+                    TextField(label, text: $text)
+                } else {
+                    SecureField(label, text: $text)
                 }
             }
+            .textFieldStyle(.roundedBorder)
+            .font(.system(.body, design: .monospaced))
+            .multilineTextAlignment(.leading)   // keys read left-to-right
+            .autocorrectionDisabled(true)
+
             Button { visible.toggle() } label: {
                 Image(systemName: visible ? "eye.slash" : "eye")
                     .foregroundColor(.secondary)
