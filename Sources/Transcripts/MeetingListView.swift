@@ -133,7 +133,7 @@ struct MeetingListView: View {
                 .foregroundColor(.secondary)
             Text("No meetings yet")
                 .font(.system(size: 12, weight: .medium))
-            Text("Upload an audio file to get started.")
+            Text("Record a meeting from the menu bar (⌃⌥⌘M), or upload an audio file.")
                 .font(.system(size: 11))
                 .foregroundColor(.secondary)
             Spacer()

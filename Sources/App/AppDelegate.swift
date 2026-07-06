@@ -479,7 +479,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             keyCode: UserDefaults.standard.integer(forKey: "meetingHotkeyKeyCode"),
             modifierMask: UserDefaults.standard.integer(forKey: "meetingHotkeyModifierMask")
         )
-        let recordMeeting = NSMenuItem(title: "Record meeting", action: #selector(toggleMeeting),
+        let recordMeeting = NSMenuItem(title: "Record Meeting", action: #selector(toggleMeeting),
                                         keyEquivalent: meetingKE.key)
         recordMeeting.keyEquivalentModifierMask = meetingKE.modifiers
         recordMeeting.image = trayIcon("waveform.circle")
@@ -506,7 +506,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         translate.image = trayIcon("globe")
         menu.addItem(translate)
 
-        let upload = NSMenuItem(title: "Upload audio file…", action: #selector(uploadAudioFile), keyEquivalent: "")
+        let upload = NSMenuItem(title: "Upload Audio File…", action: #selector(uploadAudioFile), keyEquivalent: "")
         upload.image = trayIcon("arrow.up.doc")
         menu.addItem(upload)
 
@@ -684,7 +684,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Global ESC monitor — fires even when our non-activating panel isn't key
         escMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if event.keyCode == 53 {
-                Task { @MainActor in self?.cancelRecording() }
+                Task { @MainActor in self?.cancelRecording(viaEsc: true) }
             }
         }
     }
@@ -769,12 +769,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    func cancelRecording() {
+    func cancelRecording(viaEsc: Bool = false) {
         removeEscMonitor()
         isVoiceTranslateActive = false
         transcriptionController.cancel()
-        overlayWindowController?.hideOverlay()
         updateStatusBarIcon(recording: false)
+        if viaEsc {
+            // Global ESC fires even from other apps — flash a note so a dictation
+            // isn't silently discarded when the user pressed Esc for something else.
+            overlayWindowController?.showAudioError("Dictation cancelled (Esc)", duration: 1.6) { [weak self] in
+                self?.overlayWindowController?.hideOverlay()
+            }
+        } else {
+            overlayWindowController?.hideOverlay()
+        }
     }
 
     func pauseRecording() {
@@ -960,18 +968,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             meetingMenuItem?.image = trayIcon("waveform.circle")
             meetingMenuItem?.isEnabled = false
         case .recording:
-            meetingMenuItem?.title = "Stop meeting"
+            meetingMenuItem?.title = "Stop Meeting"
             meetingMenuItem?.image = trayIcon("stop.circle.fill")
             meetingMenuItem?.isEnabled = true
         case .paused:
-            meetingMenuItem?.title = "Stop meeting (paused)"
+            meetingMenuItem?.title = "Stop Meeting (paused)"
             meetingMenuItem?.image = trayIcon("stop.circle")
             meetingMenuItem?.isEnabled = true
         case .stopping:
-            meetingMenuItem?.title = "Stopping meeting…"
+            meetingMenuItem?.title = "Stopping Meeting…"
             meetingMenuItem?.isEnabled = false
         case .processing:
-            meetingMenuItem?.title = "Transcribing meeting…"
+            meetingMenuItem?.title = "Transcribing Meeting…"
             meetingMenuItem?.image = trayIcon("waveform.path.ecg")
             meetingMenuItem?.isEnabled = false
         }

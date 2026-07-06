@@ -292,7 +292,7 @@ struct MeetingDetailView: View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(summary.rawMarkdown, forType: .string)
                 } label: {
-                    Label("Copy MD", systemImage: "doc.on.doc")
+                    Label("Copy as Markdown", systemImage: "doc.on.doc")
                         .font(.system(size: 11))
                 }
                 .buttonStyle(.borderless)
@@ -516,7 +516,7 @@ struct MeetingDetailView: View {
                 if copyState == .copied {
                     Label("Copied!", systemImage: "checkmark")
                 } else {
-                    Label("Copy MD", systemImage: "doc.on.doc")
+                    Label("Copy as Markdown", systemImage: "doc.on.doc")
                 }
             }
             .disabled((transcript?.segments.isEmpty ?? true))
@@ -1807,21 +1807,22 @@ private struct TranscriptSegmentRow: View, Equatable {
         if let letter = segment.speakerID, !letter.isEmpty {
             let displayName = speakerNames[letter] ?? "Speaker \(letter)"
             let baseColor = Self.speakerPalette[abs(letter.hashValue) % Self.speakerPalette.count]
-            let color: Color = isMe(displayName) ? .white : baseColor
+            let color: Color = isMe(displayName) ? .primary : baseColor
             renameableBadge(letter: letter, displayName: displayName, color: color,
                             tooltip: "Click to rename Speaker \(letter)")
         } else {
             switch segment.speaker {
             case .me:
                 let displayName = speakerNames["__me__"] ?? "[Me]"
-                // The mic channel is always the user — render white regardless
-                // of whether userDisplayName is set.
+                // The mic channel is always the user. Use .primary so it stays
+                // legible in both light and dark mode (plain white vanished on a
+                // light-appearance Transcripts window).
                 renameableBadge(letter: "__me__", displayName: displayName,
-                                color: .white,
+                                color: .primary,
                                 tooltip: "Click to assign a real name to the [Me] channel (your microphone).")
             case .other:
                 let displayName = speakerNames["__other__"] ?? "[Other]"
-                let color: Color = isMe(displayName) ? .white : Self.speakerPalette[3]
+                let color: Color = isMe(displayName) ? .primary : Self.speakerPalette[3]
                 renameableBadge(letter: "__other__", displayName: displayName,
                                 color: color,
                                 tooltip: "Click to assign a real name to the [Other] channel (the other side's audio).")

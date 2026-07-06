@@ -67,6 +67,11 @@ class AppleSpeechClient {
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults = true
         if #available(macOS 13, *) { req.addsPunctuation = true }
+        // Force on-device recognition when the model supports it so audio never
+        // leaves the Mac — matching the onboarding/Info.plist privacy promise.
+        if recognizer.supportsOnDeviceRecognition {
+            req.requiresOnDeviceRecognition = true
+        }
         request = req
 
         task = recognizer.recognitionTask(with: req) { [weak self] result, error in

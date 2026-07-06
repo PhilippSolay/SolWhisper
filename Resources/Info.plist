@@ -42,13 +42,13 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.7.1</string>
 	<key>CFBundleVersion</key>
-	<string>29712196</string>
+	<string>29722115</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>SolWhisper needs Apple Events to paste transcribed text.</string>
+	<string>SolWhisper uses Apple Events to press ⌘V for you, so your dictated words land in the app you were using.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>SolWhisper reads calendar events around the time of each meeting recording so it can pre-fill participants and offer real names when you label speakers.</string>
 	<key>NSCalendarsUsageDescription</key>
@@ -56,11 +56,11 @@
 	<key>NSMainNibFile</key>
 	<string></string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>SolWhisper needs microphone access to transcribe speech.</string>
+	<string>SolWhisper needs microphone access to transcribe your speech. Audio is processed on your Mac and never uploaded unless you turn on a cloud engine.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>SolWhisper records system audio (other apps' sound) during meetings so it can transcribe both sides of the conversation.</string>
+	<string>SolWhisper records other apps' audio during meetings so it can transcribe both sides of the conversation, and reads text you select on screen with Text Snap.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>SolWhisper uses on-device speech recognition to transcribe your voice privately.</string>
 	<key>SUFeedURL</key>

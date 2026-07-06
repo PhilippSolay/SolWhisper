@@ -187,6 +187,7 @@ struct RecordingOverlayView: View {
                     }
                     .buttonStyle(.plain)
                     .padding(.leading, 8)
+                    .accessibilityLabel(phaseState.mode == .meeting ? "Pause recording" : "Cancel dictation")
 
                     Spacer(minLength: 2)
 
@@ -211,6 +212,7 @@ struct RecordingOverlayView: View {
                     }
                     .buttonStyle(.plain)
                     .padding(.trailing, 8)
+                    .accessibilityLabel(phaseState.mode == .meeting ? "Stop recording" : "Insert dictation")
                 }
                 .transition(.opacity.combined(with: .scale(scale: 0.92)))
             } else {

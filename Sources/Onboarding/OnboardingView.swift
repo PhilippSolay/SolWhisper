@@ -403,6 +403,11 @@ struct OnboardingView: View {
                 summaryRow(icon: "sparkles",
                            label: "AI Polish",
                            value: enableLLMPolish ? "On" : "Off")
+                Text("SolWhisper lives in your menu bar ↗ — click the waveform icon there anytime to record, start a meeting, open Settings, or read past transcripts.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 6)
             }
             .frame(maxWidth: 340)
         }

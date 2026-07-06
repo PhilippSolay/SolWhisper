@@ -1,5 +1,15 @@
 # Meeting Mode — Concurrency Design
 
+> **⚠️ Reality check (2026-07):** This document describes the *target* model. Several
+> of its primitives were never built — there is no `MeetingFileActor`,
+> `MeetingStoreActor`, `MeetingConfig` snapshot, or bounded `AsyncStream` handoff in
+> the code today. The shipping implementation uses per-buffer `Task {}` fan-out and
+> reads settings live from `UserDefaults` mid-pipeline. The launch-hardening pass
+> fixed the concrete races this gap caused (mic tap buffer copy, cancellable +
+> crash-recoverable post-processing); the full actor/bounded-stream model is still a
+> fast-follow. Treat this as aspirational, not a description of current behavior.
+> See docs/launch-review/02-architecture.md.
+
 **Status:** v0.4 baseline · Sprint 0 deliverable · normative for Sprints 4a/4b/5
 **Goal:** Define which thread/queue/actor owns which state before any audio code is written, so we never hit a race that survives to a release.
 
