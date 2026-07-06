@@ -111,6 +111,25 @@ struct OpenRouterLLMClient: LLMClient {
     /// generations regularly run 60-180s on big meeting summaries.
     static let requestTimeout: TimeInterval = 300
 
+    /// Resolves the OpenRouter API key from Keychain across BOTH accounts the
+    /// app has historically written to. The Models tab writes the per-provider
+    /// account (`model.provider.openrouter.apiKey`); onboarding and the Home
+    /// "AI polish" field write the legacy `openRouterApiKey` account. Reading
+    /// only one silently broke LLM features for users who set the key in the
+    /// other place. Prefer the explicit per-provider entry, fall back to legacy.
+    /// See docs/launch-review/02-architecture.md (C2).
+    static func resolveApiKey() -> String {
+        let providerKey = (try? KeychainStore.string(forKey: ModelProvider.openrouter.apiKeyKeychainKey)) ?? ""
+        let legacyKey = (try? KeychainStore.string(forKey: SecretsStore.Keys.openRouterApiKey)) ?? ""
+        return resolveKey(providerKey: providerKey, legacyKey: legacyKey)
+    }
+
+    /// Pure precedence rule, split out so it's testable without touching the
+    /// Keychain: prefer the explicit per-provider key, fall back to legacy.
+    static func resolveKey(providerKey: String, legacyKey: String) -> String {
+        providerKey.isEmpty ? legacyKey : providerKey
+    }
+
     func complete(messages: [LLMMessage],
                   model: String,
                   temperature: Double,
@@ -127,7 +146,7 @@ struct OpenRouterLLMClient: LLMClient {
                               model: String,
                               temperature: Double,
                               maxTokens: Int) async throws -> String {
-        let apiKey = (try? KeychainStore.string(forKey: SecretsStore.Keys.openRouterApiKey)) ?? ""
+        let apiKey = Self.resolveApiKey()
         guard !apiKey.isEmpty else { throw LLMError.missingApiKey("openrouter") }
 
         guard let url = URL(string: "https://openrouter.ai/api/v1/chat/completions") else {
@@ -186,7 +205,7 @@ struct OpenRouterLLMClient: LLMClient {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let apiKey = (try? KeychainStore.string(forKey: SecretsStore.Keys.openRouterApiKey)) ?? ""
+                    let apiKey = Self.resolveApiKey()
                     guard !apiKey.isEmpty else { throw LLMError.missingApiKey("openrouter") }
 
                     guard let url = URL(string: "https://openrouter.ai/api/v1/chat/completions") else {
