@@ -128,7 +128,7 @@ class TranscriptionController: ObservableObject {
         isFinalAccumulator = ""
         isRecording        = true
 
-        let apiKey = UserDefaults.standard.string(forKey: "deepgramApiKey") ?? ""
+        let apiKey = (try? KeychainStore.string(forKey: SecretsStore.Keys.deepgramApiKey)) ?? ""
         deepgramClient = DeepgramClient(apiKey: apiKey)
 
         deepgramClient?.onTranscript = { [weak self] text, isFinal in
@@ -269,11 +269,20 @@ class TranscriptionController: ObservableObject {
             isRecording = true
             AVCaptureDevice.requestAccess(for: .audio) { granted in
                 Task { @MainActor in
-                    if granted { action() } else { self.isRecording = false }
+                    if granted { action() }
+                    else {
+                        self.isRecording = false
+                        self.onAudioFailure?("Microphone access is off. Open System Settings → Privacy & Security → Microphone and turn on SolWhisper.")
+                    }
                 }
             }
         default:
-            DebugLog.shared.log(icon: "🎙", label: "Microphone access denied — re-grant in System Settings → Privacy → Microphone", ok: false)
+            // Denied/restricted. Surface it instead of leaving the overlay pill
+            // stuck "listening" with no explanation — onAudioFailure shows an
+            // error banner with a System Settings link and tears the pill down.
+            isRecording = false
+            DebugLog.shared.log(icon: "🎙", label: "Microphone access denied", ok: false)
+            onAudioFailure?("Microphone access is off. Open System Settings → Privacy & Security → Microphone and turn on SolWhisper.")
         }
     }
 
@@ -291,6 +300,7 @@ class TranscriptionController: ObservableObject {
         default:
             DebugLog.shared.log(icon: "🍎", label: "Speech recognition not authorized", ok: false)
             isRecording = false
+            onAudioFailure?("Speech Recognition is off. Open System Settings → Privacy & Security → Speech Recognition and turn on SolWhisper.")
         }
     }
 }

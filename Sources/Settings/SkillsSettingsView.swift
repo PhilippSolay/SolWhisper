@@ -15,7 +15,7 @@ struct SkillsSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Text("The default skill picker lives in **STT Meetings → Summary**.")
+                Text("Skills are summary templates — they decide what your meeting summary contains. Pick the default in **Meetings → Auto-pipeline**.")
                     .font(.caption).foregroundColor(.secondary)
             }
 

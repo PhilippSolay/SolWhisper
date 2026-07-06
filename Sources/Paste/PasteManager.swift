@@ -18,6 +18,11 @@ enum PasteManager {
         }
     }
 
+    /// Fired (MainActor) when the text could not be auto-inserted and is left on
+    /// the clipboard for a manual ⌘V — the app wires this to a visible notice so
+    /// the failure isn't silent (the top "I dictated and nothing happened" case).
+    @MainActor static var onClipboardFallback: (() -> Void)?
+
     // MARK: - Paste
 
     @MainActor
@@ -89,6 +94,12 @@ enum PasteManager {
         // Method D: CGEvent
         sendCmdV(to: target)
 
+        // Reaching here means methods A–C already failed. Without Accessibility,
+        // none of them (nor CGEvent) can reliably insert — the text is only on
+        // the clipboard. Surface that instead of failing silently.
+        if !hasAccessibility {
+            onClipboardFallback?()
+        }
         DebugLog.shared.log(icon: "📋", label: "Paste result",
                             value: "text on clipboard — press ⌘V if needed", ok: false)
     }

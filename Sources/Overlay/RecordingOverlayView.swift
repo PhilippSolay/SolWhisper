@@ -204,7 +204,7 @@ struct RecordingOverlayView: View {
                             Circle()
                                 .fill(Color.white.opacity(0.12))
                                 .frame(width: 32, height: 32)
-                            Image(systemName: phaseState.mode == .meeting ? "checkmark" : "checkmark")
+                            Image(systemName: phaseState.mode == .meeting ? "stop.fill" : "checkmark")
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundColor(.white)
                         }

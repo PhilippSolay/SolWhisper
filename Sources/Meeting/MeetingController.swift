@@ -163,7 +163,34 @@ final class MeetingController: ObservableObject {
         if !hasScreen {
             DebugLog.shared.log(icon: "🔉", label: "Screen recording not granted",
                                 value: "system audio will be silent", ok: false)
-            // Continue — mic-only recording is still useful.
+            // Warn before recording a one-sided (mic-only) meeting — silently
+            // dropping the other participants' audio is a nasty surprise after
+            // a 60-minute call. Suppressible for users who do this on purpose.
+            if !UserDefaults.standard.bool(forKey: "meetingMicOnlyWarningSuppressed") {
+                let alert = NSAlert()
+                alert.messageText = "Only your microphone will be recorded"
+                alert.informativeText = "Screen Recording isn't enabled, so SolWhisper can capture only your voice — not the other participants. macOS may need you to quit and reopen SolWhisper after you grant it."
+                alert.addButton(withTitle: "Record mic only")
+                alert.addButton(withTitle: "Open System Settings")
+                alert.addButton(withTitle: "Cancel")
+                alert.showsSuppressionButton = true
+                alert.suppressionButton?.title = "Don't warn me again"
+                let resp = alert.runModal()
+                if alert.suppressionButton?.state == .on {
+                    UserDefaults.standard.set(true, forKey: "meetingMicOnlyWarningSuppressed")
+                }
+                switch resp {
+                case .alertSecondButtonReturn:
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                    state = .idle
+                    return
+                case .alertThirdButtonReturn:
+                    state = .idle
+                    return
+                default:
+                    break   // Record mic only
+                }
+            }
         }
 
         // Create the meeting folder.
@@ -458,7 +485,7 @@ final class MeetingController: ObservableObject {
         let micExists = FileManager.default.fileExists(atPath: micOutURL.path)
         let sysExists = FileManager.default.fileExists(atPath: systemOutURL.path)
 
-        async let micResult: [TranscriptSegment] = micExists
+        async let micResult: (segments: [TranscriptSegment], failed: Bool) = micExists
             ? Self.transcribeChannel(audioURL: micOutURL,
                                       model: model,
                                       speaker: SpeakerLabel.me,
@@ -467,8 +494,8 @@ final class MeetingController: ObservableObject {
                                               self?.transcribeMicProgress = f
                                           }
                                       })
-            : []
-        async let sysResult: [TranscriptSegment] = sysExists
+            : (segments: [], failed: false)
+        async let sysResult: (segments: [TranscriptSegment], failed: Bool) = sysExists
             ? Self.transcribeChannel(audioURL: systemOutURL,
                                       model: model,
                                       speaker: SpeakerLabel.other,
@@ -477,13 +504,28 @@ final class MeetingController: ObservableObject {
                                               self?.transcribeSystemProgress = f
                                           }
                                       })
-            : []
+            : (segments: [], failed: false)
 
-        var allSegments = await micResult + sysResult
+        let mic = await micResult
+        let sys = await sysResult
+        var allSegments = mic.segments + sys.segments
         transcribeMicProgress = nil
         transcribeSystemProgress = nil
         logPhaseElapsed("Transcribe", since: transcribeStart,
                         detail: "\(allSegments.count) segments · model=\(model) · parallel=\(micExists && sysExists)")
+
+        // If every channel that had audio FAILED to transcribe (offline while
+        // the WhisperKit model still needed downloading, a corrupt file, etc.),
+        // don't write an empty transcript — that would mark the meeting
+        // "complete" and hide it from crash recovery. Leave it recoverable so
+        // re-opening the app (once online) retries. A genuinely silent recording
+        // (0 segments, no error) still writes an empty transcript as before.
+        let allChannelsFailed = (!micExists || mic.failed) && (!sysExists || sys.failed)
+        if allChannelsFailed && (micExists || sysExists) {
+            DebugLog.shared.log(icon: "📝", label: "Transcription failed — meeting kept for recovery",
+                                value: "check your connection, then reopen SolWhisper to retry", ok: false)
+            return   // defer resets state; no transcript.json written → recoverable next launch
+        }
 
         // Sort by start time so [Me] / [Other] interleave naturally.
         allSegments.sort(by: { $0.start < $1.start })
@@ -621,16 +663,29 @@ final class MeetingController: ObservableObject {
         model: String,
         speaker: SpeakerLabel,
         onProgress: @escaping @Sendable (Double) -> Void
-    ) async -> [TranscriptSegment] {
-        let segments = (try? await WhisperKitClient.fileTranscribe(
-            audioPath: audioURL,
-            model: model,
-            progress: onProgress
-        )) ?? []
-        return segments.map {
-            TranscriptSegment(id: $0.id, start: $0.start, end: $0.end,
-                              text: $0.text, confidence: $0.confidence,
-                              speaker: speaker, cleanedText: $0.cleanedText)
+    ) async -> (segments: [TranscriptSegment], failed: Bool) {
+        do {
+            let segments = try await WhisperKitClient.fileTranscribe(
+                audioPath: audioURL,
+                model: model,
+                progress: onProgress
+            )
+            let mapped = segments.map {
+                TranscriptSegment(id: $0.id, start: $0.start, end: $0.end,
+                                  text: $0.text, confidence: $0.confidence,
+                                  speaker: speaker, cleanedText: $0.cleanedText)
+            }
+            return (mapped, false)
+        } catch {
+            // Don't swallow — a failure here (offline while the model still
+            // needs downloading, or a corrupt file) used to silently produce an
+            // empty transcript with no clue why. Report it so the caller can
+            // skip writing an empty transcript and leave the meeting recoverable.
+            Task { @MainActor in
+                DebugLog.shared.log(icon: "📝", label: "Transcribe failed (\(speaker.rawValue))",
+                                    value: error.localizedDescription, ok: false)
+            }
+            return ([], true)
         }
     }
 

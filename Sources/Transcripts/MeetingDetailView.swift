@@ -1629,7 +1629,7 @@ struct MeetingDetailView: View {
                         .foregroundColor(.secondary)
                         .font(.system(size: 12))
                 } else if cachedVisibleSegments.isEmpty {
-                    Text("Cleanup removed every segment as non-speech. Re-transcribe with a higher-accuracy model (Settings → Models → STT Meetings → large-v3-turbo) for better results.")
+                    Text("Cleanup removed every segment as non-speech. Re-transcribe with a higher-accuracy model (Settings → Models → Meetings → large-v3-turbo) for better results.")
                         .foregroundColor(.secondary)
                         .font(.system(size: 12))
                 } else {

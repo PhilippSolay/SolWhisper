@@ -18,12 +18,11 @@ struct OnboardingView: View {
 
     @EnvironmentObject private var secrets: SecretsStore
     @AppStorage("transcriptionBackend")  private var backend          = "apple"
-    @AppStorage("deepgramApiKey")        private var deepgramApiKey   = ""
     @AppStorage("enableLLMPolish")       private var enableLLMPolish  = true
     @AppStorage("hotkeyKeyCode")           private var hotkeyKeyCode           = 15
-    @AppStorage("hotkeyModifierMask")      private var hotkeyModifierMask      = 10
+    @AppStorage("hotkeyModifierMask")      private var hotkeyModifierMask      = 11
     @AppStorage("pauseHotkeyKeyCode")      private var pauseHotkeyKeyCode      = 35
-    @AppStorage("pauseHotkeyModifierMask") private var pauseHotkeyModifierMask = 10
+    @AppStorage("pauseHotkeyModifierMask") private var pauseHotkeyModifierMask = 11
 
     @State private var step: OnboardingStep = .welcome
     @State private var deepgramVisible       = false
@@ -37,7 +36,7 @@ struct OnboardingView: View {
 
     private var canContinue: Bool {
         switch step {
-        case .backendDetail: return backend == "apple" || !deepgramApiKey.isEmpty
+        case .backendDetail: return backend == "apple" || !secrets.deepgramApiKey.isEmpty
         case .llmPolish:     return !enableLLMPolish   || !secrets.openRouterApiKey.isEmpty
         default:             return true
         }
@@ -163,7 +162,13 @@ struct OnboardingView: View {
                     .disabled(!canContinue)
 
                 if step == .llmPolish {
-                    Button("Skip") { withAnimation { step = .hotkey } }
+                    Button("Skip") {
+                        // Skipping AI polish must disable it — otherwise every
+                        // later dictation fires a keyless LLM call that 401s. And
+                        // advance to the Meetings step, not past it.
+                        enableLLMPolish = false
+                        withAnimation { step = .meetings }
+                    }
                         .buttonStyle(.plain)
                         .foregroundStyle(.secondary)
                         .padding(.leading, 6)
@@ -188,7 +193,7 @@ struct OnboardingView: View {
             VStack(spacing: 6) {
                 Text("Welcome to SolWhisper")
                     .font(.title2).fontWeight(.semibold)
-                Text("Speak anywhere. Transcribe instantly.\nHit ⌥⌘R, say something — your words appear.")
+                Text("Speak anywhere. Transcribe instantly.\nHit \(hotkeyDisplayString(keyCode: hotkeyKeyCode, modifierMask: hotkeyModifierMask)), say something — your words appear.")
                     .font(.body).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(2)
@@ -283,7 +288,7 @@ struct OnboardingView: View {
                 title: "Add your Deepgram key",
                 subtitle: "Get a free key with 12,000 minutes/year at console.deepgram.com"
             ) {
-                APIKeyField(label: "Deepgram API Key", text: $deepgramApiKey, visible: $deepgramVisible)
+                APIKeyField(label: "Deepgram API Key", text: $secrets.deepgramApiKey, visible: $deepgramVisible)
                     .frame(maxWidth: 380)
 
                 Link("Open Deepgram Console →",

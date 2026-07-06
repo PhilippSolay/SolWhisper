@@ -217,6 +217,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.handleAudioFailure(message: message)
             }
         }
+
+        // Auto-paste couldn't insert (no Accessibility) — the text is on the
+        // clipboard. Surface a visible notice instead of a silent no-op, which
+        // was the top "I dictated and nothing happened" first-run failure.
+        PasteManager.onClipboardFallback = { [weak self] in
+            self?.overlayWindowController?.showAudioError(
+                "On your clipboard — press ⌘V. Turn on SolWhisper in System Settings → Privacy & Security → Accessibility to auto-paste next time."
+            ) { [weak self] in
+                self?.overlayWindowController?.hideOverlay()
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

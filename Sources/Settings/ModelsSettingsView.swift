@@ -7,9 +7,9 @@ struct ModelsSettingsView: View {
 
     @EnvironmentObject private var secrets: SecretsStore
 
-    // STT engines — moved here from STT Short / STT Meetings.
+    // STT engines — moved here from the old STT Short / STT Meetings tabs.
+    // The Deepgram key lives in Keychain (via SecretsStore), not @AppStorage.
     @AppStorage("transcriptionBackend")     private var shortBackend      = "apple"
-    @AppStorage("deepgramApiKey")           private var deepgramApiKey    = ""
     @AppStorage("whisperKitModel")          private var whisperKitModel   = WhisperKitClient.defaultModel
     @AppStorage("meetingsBackend")          private var meetingsBackend   = "whisperkit"
     @AppStorage("meetingsWhisperKitModel")  private var meetingsWKModel   = WhisperKitClient.defaultModel
@@ -38,10 +38,10 @@ struct ModelsSettingsView: View {
         Form {
             // Speech-to-text engines for both modes.
             Section {
-                Picker("STT Short", selection: $shortBackend) {
+                Picker("Dictation", selection: $shortBackend) {
                     Text("Apple Speech  (free · on-device)").tag("apple")
                     Text("WhisperKit  (offline · highest accuracy)").tag("whisperkit")
-                    Text("Parakeet TDT  (NVIDIA · on-device · ANE)").tag("parakeet")
+                    Text("Parakeet TDT  (coming soon)").tag("parakeet")
                     Text("Deepgram nova-3  (cloud)").tag("deepgram")
                 }
                 switch shortBackend {
@@ -50,7 +50,7 @@ struct ModelsSettingsView: View {
                         .font(.caption).foregroundColor(.secondary)
                 case "deepgram":
                     APIKeyField(label: "Deepgram API Key",
-                                text: $deepgramApiKey,
+                                text: $secrets.deepgramApiKey,
                                 visible: $deepgramVisible)
                 case "whisperkit":
                     WhisperKitModelPicker(title: "WhisperKit model", modelID: $whisperKitModel)
@@ -59,17 +59,17 @@ struct ModelsSettingsView: View {
                         Text("v3 — 25 EU + JA/ZH (multilingual)").tag("v3")
                         Text("v2 — English only (lowest WER)").tag("v2")
                     }
-                    Text("Streaming wires up in v0.7 via FluidAudio's SlidingWindowAsrManager. The picker persists your choice now; dictation falls back to Apple Speech until then.")
+                    Text("Parakeet isn't available yet — dictation uses Apple Speech for now.")
                         .font(.caption).foregroundColor(.orange)
                 default:
                     EmptyView()
                 }
-            } header: { Text("STT Short — dictation engine") }
+            } header: { Text("Dictation engine") }
 
             Section {
-                Picker("STT Meetings", selection: $meetingsBackend) {
+                Picker("Meetings", selection: $meetingsBackend) {
                     Text("WhisperKit  (offline)").tag("whisperkit")
-                    Text("Parakeet TDT  (NVIDIA · on-device · ANE)").tag("parakeet")
+                    Text("Parakeet TDT  (coming soon)").tag("parakeet")
                 }
                 switch meetingsBackend {
                 case "whisperkit":
@@ -79,12 +79,12 @@ struct ModelsSettingsView: View {
                         Text("v3 — 25 EU + JA/ZH (multilingual)").tag("v3")
                         Text("v2 — English only (lowest WER)").tag("v2")
                     }
-                    Text("File transcription wires up in v0.7. Picker persists your choice; meetings fall back to WhisperKit until then. ~190× realtime on M-series; v2 ≈ 1.69% WER on LibriSpeech.")
+                    Text("Parakeet isn't available yet — meetings use WhisperKit for now.")
                         .font(.caption).foregroundColor(.orange)
                 default:
                     EmptyView()
                 }
-            } header: { Text("STT Meetings — meeting engine") } footer: {
+            } header: { Text("Meetings engine") } footer: {
                 Text("Apple Speech and Deepgram are mic-only / streaming-only and can't transcribe pre-recorded meeting audio. WhisperKit and Parakeet both run on-device and accept file URLs.")
                     .font(.caption).foregroundColor(.secondary)
             }
@@ -110,9 +110,9 @@ struct ModelsSettingsView: View {
                 }
                 if diarizationEngine == "deepgram" {
                     APIKeyField(label: "Deepgram API Key",
-                                text: $deepgramApiKey,
+                                text: $secrets.deepgramApiKey,
                                 visible: $deepgramVisible)
-                    Text("Reuses the same key as STT Short → Deepgram if you have one set.")
+                    Text("Reuses the same key as Dictation → Deepgram if you have one set.")
                         .font(.caption).foregroundColor(.secondary)
                 }
                 if diarizationEngine == "fluidaudio" {

@@ -7,8 +7,8 @@ enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
     // Sidebar order matches the user-requested layout. `rawValue` is what
     // displays in the sidebar; case names stay short for the switch.
     case home          = "Home"
-    case transcription = "STT Short"
-    case meetings      = "STT Meetings"
+    case transcription = "Dictation"
+    case meetings      = "Meetings"
     case ocr           = "Screen Capture"
     case translate     = "Translate"
     case voiceTranslate = "Voice Translate"
@@ -318,9 +318,9 @@ struct VocabularySettingsView: View {
 
 struct HotkeySettingsView: View {
     @AppStorage("hotkeyKeyCode")           private var hotkeyKeyCode           = 15
-    @AppStorage("hotkeyModifierMask")      private var hotkeyModifierMask      = 10
+    @AppStorage("hotkeyModifierMask")      private var hotkeyModifierMask      = 11
     @AppStorage("pauseHotkeyKeyCode")      private var pauseHotkeyKeyCode      = 35
-    @AppStorage("pauseHotkeyModifierMask") private var pauseHotkeyModifierMask = 10
+    @AppStorage("pauseHotkeyModifierMask") private var pauseHotkeyModifierMask = 11
     /// Snip hotkey ships unset (0/0). User picks one in this UI.
     @AppStorage("snipHotkeyKeyCode")       private var snipHotkeyKeyCode       = 0
     @AppStorage("snipHotkeyModifierMask")  private var snipHotkeyModifierMask  = 0

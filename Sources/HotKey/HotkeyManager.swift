@@ -162,7 +162,7 @@ class HotkeyManager {
         let kc   = UserDefaults.standard.integer(forKey: "hotkeyKeyCode")
         let mask = UserDefaults.standard.integer(forKey: "hotkeyModifierMask")
         let keyCode   = UInt32(kc   != 0 ? kc   : 15)
-        let carbonMod = carbonModifiers(mask != 0 ? mask : 10)
+        let carbonMod = carbonModifiers(mask != 0 ? mask : 11)
 
         var hkID = EventHotKeyID(signature: 0x5357_4853, id: 1)
         let err = RegisterEventHotKey(keyCode, carbonMod, hkID,
@@ -178,7 +178,7 @@ class HotkeyManager {
         let pkc   = UserDefaults.standard.integer(forKey: "pauseHotkeyKeyCode")
         let pmask = UserDefaults.standard.integer(forKey: "pauseHotkeyModifierMask")
         let pauseKeyCode   = UInt32(pkc   != 0 ? pkc   : 35)
-        let pauseCarbonMod = carbonModifiers(pmask != 0 ? pmask : 10)
+        let pauseCarbonMod = carbonModifiers(pmask != 0 ? pmask : 11)
 
         var pauseID = EventHotKeyID(signature: 0x5357_4853, id: 2)
         let perr = RegisterEventHotKey(pauseKeyCode, pauseCarbonMod, pauseID,
