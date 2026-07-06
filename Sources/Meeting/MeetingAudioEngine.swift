@@ -130,19 +130,47 @@ final class MeetingAudioEngine {
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             guard let self else { return }
             // The tap runs on the audio thread. Do the per-buffer DSP here
-            // (RMS + FFT) and dispatch to MainActor for state mutations.
+            // (RMS + FFT) synchronously, then dispatch to MainActor.
             let level = MeetingAudioEngine.rms(buffer)
             let bins = comp.compute(buffer)
+            // CRITICAL: AVAudioEngine recycles this tap buffer the instant this
+            // callback returns. `onMicBuffer` runs on a later MainActor hop and
+            // forwards it to ChunkWriter → AVAudioFile.write, so it MUST get a
+            // private copy — otherwise it writes whatever audio the engine has
+            // since reused into the buffer's backing store (garbled chunks).
+            let micCopy = MeetingAudioEngine.deepCopy(buffer)
             Task { @MainActor in
                 guard !self.isPaused else { return }
                 self.lastMicLevel = level
                 self.onLevels?(self.lastMicLevel, self.lastSystemLevel)
                 self.onSpectrum?(bins)
-                self.onMicBuffer?(buffer)
+                if let micCopy { self.onMicBuffer?(micCopy) }
             }
         }
         micEngine.prepare()
         try micEngine.start()
+    }
+
+    /// Deep-copies a PCM buffer so its samples survive past the tap callback
+    /// (AVAudioEngine recycles the source buffer as soon as the callback
+    /// returns). Returns nil if allocation fails or the sample format is
+    /// unsupported. Safe to call on the audio thread — one allocation + memcpy.
+    nonisolated static func deepCopy(_ source: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let copy = AVAudioPCMBuffer(pcmFormat: source.format,
+                                          frameCapacity: source.frameCapacity) else { return nil }
+        copy.frameLength = source.frameLength
+        let channels = Int(source.format.channelCount)
+        let frames = Int(source.frameLength)
+        if let src = source.floatChannelData, let dst = copy.floatChannelData {
+            for ch in 0..<channels { memcpy(dst[ch], src[ch], frames * MemoryLayout<Float>.size) }
+        } else if let src = source.int16ChannelData, let dst = copy.int16ChannelData {
+            for ch in 0..<channels { memcpy(dst[ch], src[ch], frames * MemoryLayout<Int16>.size) }
+        } else if let src = source.int32ChannelData, let dst = copy.int32ChannelData {
+            for ch in 0..<channels { memcpy(dst[ch], src[ch], frames * MemoryLayout<Int32>.size) }
+        } else {
+            return nil
+        }
+        return copy
     }
 
     /// Computes the per-buffer RMS in [0, 1]. Run on whatever thread delivered

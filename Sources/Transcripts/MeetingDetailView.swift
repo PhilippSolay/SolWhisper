@@ -1383,6 +1383,10 @@ struct MeetingDetailView: View {
     private func deleteMeeting() {
         playback.controller?.pause()
         playback.controller = nil
+        // If this meeting is still being processed, stop the pipeline before we
+        // trash the folder — otherwise it keeps writing transcript/summary into
+        // the deleted folder and resurrects the meeting in the list.
+        meetingController.cancelProcessingIfDeleting(meeting.id)
         do {
             try store.delete(meeting)
             onDeleted()

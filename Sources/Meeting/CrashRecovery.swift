@@ -21,14 +21,31 @@ enum CrashRecovery {
     /// throwing (we'd rather miss a recovery than crash on launch).
     static func scan(in store: MeetingStore) -> [OrphanSession] {
         var orphans: [OrphanSession] = []
+        let fm = FileManager.default
         for meeting in store.meetings {
-            let chunksDir = store.folderURL(for: meeting).appendingPathComponent("chunks")
-            let doneFlag = chunksDir.appendingPathComponent("done.flag")
-            let fm = FileManager.default
-            guard fm.fileExists(atPath: chunksDir.path),
-                  !fm.fileExists(atPath: doneFlag.path) else { continue }
+            let folder = store.folderURL(for: meeting)
+
+            // A completed meeting always has a transcript.json (written at the
+            // end of post-processing). If it's present, this meeting finished —
+            // skip it. Keying recovery off the transcript (not `done.flag`) is
+            // what lets us catch a crash/force-quit that happened DURING
+            // post-processing, not only during recording: done.flag is written
+            // when recording stops, well before the multi-minute transcribe
+            // phase, so a crash mid-transcribe used to leave a permanently
+            // empty, unrecoverable meeting.
+            let transcript = folder.appendingPathComponent("transcript.json")
+            if fm.fileExists(atPath: transcript.path) { continue }
+
+            // Recoverable if either the raw chunks survive (crash during
+            // recording) or the stitched audio survives (crash after stitch,
+            // during transcribe — chunks already deleted).
+            let chunksDir = folder.appendingPathComponent("chunks")
             let count = chunkCount(at: chunksDir)
-            guard count > 0 else { continue }
+            let hasChunks = fm.fileExists(atPath: chunksDir.path) && count > 0
+            let hasStitchedAudio = fm.fileExists(atPath: folder.appendingPathComponent("audio.m4a").path)
+                || fm.fileExists(atPath: folder.appendingPathComponent("audio_mic.m4a").path)
+            guard hasChunks || hasStitchedAudio else { continue }
+
             orphans.append(OrphanSession(
                 meeting: meeting,
                 chunksDirectory: chunksDir,
@@ -62,7 +79,10 @@ enum CrashRecovery {
         let count = orphans.count
         alert.messageText = "Recover unfinished meeting\(count == 1 ? "" : "s")?"
         alert.informativeText = orphans.enumerated().map { idx, o in
-            "\(idx + 1). \(o.meeting.title) — \(o.chunkCount) chunk\(o.chunkCount == 1 ? "" : "s")"
+            let detail = o.chunkCount > 0
+                ? "\(o.chunkCount) chunk\(o.chunkCount == 1 ? "" : "s")"
+                : "interrupted while processing"
+            return "\(idx + 1). \(o.meeting.title) — \(detail)"
         }.joined(separator: "\n")
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Recover")

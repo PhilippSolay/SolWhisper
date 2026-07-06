@@ -43,6 +43,12 @@ final class MeetingController: ObservableObject {
     @Published private(set) var processingPhase: MeetingProcessingPhase? = nil
     @Published private(set) var processingMeetingID: UUID? = nil
 
+    /// Handle to the running post-processing pipeline so it can be cancelled
+    /// (e.g. the user deletes the meeting mid-transcribe). Without this the
+    /// pipeline kept writing transcript/summary/meeting.json into a folder the
+    /// delete had already trashed, resurrecting "zombie" meetings.
+    private var processingTask: Task<Void, Never>?
+
     /// Fires when post-processing transitions from idle → stitching (first
     /// real work after recording stops). AppDelegate uses this to swap the
     /// pill for the Transcripts window with the new meeting selected.
@@ -333,7 +339,7 @@ final class MeetingController: ObservableObject {
 
         // Move to processing — stitch chunks, transcribe, write outputs.
         state = .processing(meetingID: meeting.id)
-        Task { await self.runPostProcessing(for: meeting) }
+        processingTask = Task { await self.runPostProcessing(for: meeting) }
     }
 
     private func cancelInternal() async {
@@ -353,6 +359,22 @@ final class MeetingController: ObservableObject {
         DebugLog.shared.log(icon: "🛑", label: "Meeting cancelled — folder discarded")
     }
 
+    /// True while the meeting's on-disk folder still exists. Used as a
+    /// "deleted out from under us" guard in the post-processing pipeline.
+    private func meetingFolderExists(_ meeting: Meeting) -> Bool {
+        FileManager.default.fileExists(atPath: store.folderURL(for: meeting).path)
+    }
+
+    /// Cancels the running post-processing pipeline if it's working on the
+    /// meeting the user is about to delete. Called by the detail view before
+    /// `store.delete` so the pipeline stops before it can re-write the folder.
+    func cancelProcessingIfDeleting(_ meetingID: UUID) {
+        guard processingMeetingID == meetingID else { return }
+        processingTask?.cancel()
+        DebugLog.shared.log(icon: "✋", label: "Cancelled processing for deleted meeting",
+                            value: meetingID.uuidString)
+    }
+
     // MARK: - Recovery
 
     /// Picks up a meeting whose chunks/ folder still exists but `done.flag`
@@ -368,15 +390,12 @@ final class MeetingController: ObservableObject {
                             value: meeting.folderName)
         self.meeting = meeting
 
-        // Mark the chunks/ folder finalised so a second crash-recovery scan
-        // doesn't re-flag this meeting if processing fails halfway through.
-        let chunksDir = store.folderURL(for: meeting).appendingPathComponent("chunks")
-        let doneFlag = chunksDir.appendingPathComponent("done.flag")
-        let stamp = ISO8601DateFormatter().string(from: Date())
-        try? stamp.write(to: doneFlag, atomically: true, encoding: .utf8)
-
+        // Recovery completion is now keyed off `transcript.json` (written at the
+        // end of the pipeline), so we no longer need to stamp done.flag up front.
+        // If this recovery run is itself interrupted, the next launch's scan
+        // still sees a missing transcript and re-offers recovery.
         state = .processing(meetingID: meeting.id)
-        Task { await self.runPostProcessing(for: meeting) }
+        processingTask = Task { await self.runPostProcessing(for: meeting) }
     }
 
     // MARK: - Post-processing
@@ -421,6 +440,10 @@ final class MeetingController: ObservableObject {
                                 value: "\(error)", ok: false)
             // Don't bail — try transcription on whatever made it to the stitched outputs.
         }
+
+        // Stop early if the meeting was deleted / the pipeline was cancelled
+        // during stitch — no point transcribing a folder that's on its way out.
+        if Task.isCancelled { return }
 
         // Transcribe both channels concurrently. The mic and system audio
         // are independent files; running them in parallel roughly halves
@@ -485,6 +508,17 @@ final class MeetingController: ObservableObject {
                                     value: error.localizedDescription, ok: false)
                 // Keep raw segments on failure — meeting still ships.
             }
+        }
+
+        // Last checkpoint before we start persisting outputs. If the user
+        // deleted the meeting (or the pipeline was cancelled) while transcribing,
+        // bail now — otherwise writeTranscript/update below re-create the trashed
+        // folder and resurrect a zombie meeting in the list. The `defer` at the
+        // top resets state cleanly.
+        if Task.isCancelled || !meetingFolderExists(meeting) {
+            DebugLog.shared.log(icon: "🗑", label: "Meeting removed mid-processing — skipping writes",
+                                value: meeting.folderName)
+            return
         }
 
         let document = TranscriptDocument(meetingID: meeting.id, segments: allSegments)
@@ -849,9 +883,16 @@ final class MeetingController: ObservableObject {
         let sysFrames = AVAudioFrameCount(systemFile.length)
         let totalFrames = max(micFrames, sysFrames)
 
-        let micBuf = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: block)!
-        let sysBuf = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: block)!
-        let outBuf = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: block)!
+        // Failable initializer — under memory pressure on a long meeting this
+        // can return nil. Fail the mix gracefully (the caller's do/catch keeps
+        // the meeting alive with whatever audio stitched) instead of crashing
+        // deep in post-processing after the user already stopped recording.
+        guard let micBuf = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: block),
+              let sysBuf = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: block),
+              let outBuf = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: block) else {
+            throw NSError(domain: "SolWhisper.MeetingController", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Could not allocate mixdown buffers (low memory)"])
+        }
 
         // Side-chain ducking enabled by default; user can disable via Settings.
         let duck = (UserDefaults.standard.object(forKey: "meetingsAudioDucking") as? Bool) ?? true
