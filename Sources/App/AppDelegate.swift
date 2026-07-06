@@ -62,6 +62,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var recordingTarget: NSRunningApplication?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Under XCTest the unit-test bundle launches this app as its test host.
+        // Skip all runtime setup — status bar, permission prompts, windows,
+        // one-shot migrations — so the suite runs headless and never triggers
+        // TCC permission prompts (mic / speech / accessibility). Individual
+        // one-shots like MeetingAudioCompaction already guard this the same way.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil { return }
+
         // Default hotkeys — all on `⌃⌥⌘` so we don't fight macOS Spotlight
         // (⌘Space) or any common app shortcuts. Mask 11 = Ctrl + Opt + Cmd.
         // Key codes (US ANSI): R=15, M=46, P=35, O=31, T=17.
@@ -101,6 +108,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             "polishFixPunctuation": true,
             "polishFixGrammar":     false,
             "showLiveTranscript":   true,
+            // Meeting auto-pipeline toggles. These MUST match MeetingSettingsView's
+            // @AppStorage defaults, because the pipeline reads them via
+            // UserDefaults.bool(forKey:) which is `false` when unregistered.
+            // Auto-summarize in particular showed ON in Settings but silently
+            // never ran on a fresh install until it was registered here.
+            "meetingsAutoSummarize":      true,
+            "meetingsAutoCleanTranscript": true,
+            "meetingsAudioDucking":       true,
+            "meetingsClippingDetect":     true,
+            "meetingsRecordingDisclosure": true,
+            "meetingsChunkSeconds":       30,
         ])
 
         migrateLegacyHotkeyDefaultsIfNeeded()
@@ -199,6 +217,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.handleAudioFailure(message: message)
             }
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Best-effort clean teardown on quit. If a dictation is mid-flight, tear
+        // it down so the audio engine/temp file is flushed and closed rather
+        // than left half-written. Meetings are chunk-written continuously and
+        // recovered on next launch (see CrashRecovery), so they need no action.
+        if transcriptionController.isRecording {
+            transcriptionController.cancel()
+        }
+        ErrorLogger.shared.sweepOldLogs()
     }
 
     /// Shows the error banner and tears down the recording session after
@@ -371,28 +400,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let list = missing.joined(separator: ", ")
             DebugLog.shared.log(icon: "⚠️", label: "Missing permissions", value: list, ok: false)
 
-            // Show as a system user-notification rather than a modal alert.
-            //
-            // `NSAlert.runModal()` enters a nested runloop on the main thread
-            // that STARVES Swift concurrency — every `@MainActor`-bound
-            // continuation queues until the user dismisses the alert. That
-            // deadlocks `VoiceProfileBackfill`'s final `store.update` write
-            // (the heavy embedding work runs off-main, but persistence has
-            // to hop back to the @MainActor store) and any other async work
-            // landing during launch.
-            //
-            // The notification is non-blocking: clicking it can deep-link to
-            // System Settings later. Users who never grant the permissions
-            // still see the menu-bar UI's own indicators when they try to
-            // use a gated feature, so the prompt isn't load-bearing.
+            // Non-blocking nudge via UNUserNotificationCenter (see
+            // PermissionsNotifier). A modal NSAlert is intentionally avoided —
+            // runModal() starves Swift concurrency during launch and would
+            // deadlock the VoiceProfileBackfill store write. Its "Open Settings"
+            // action deep-links to Privacy & Security (unlike the old
+            // NSUserNotification, whose button no longer works on modern macOS).
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                let n = NSUserNotification()
-                n.title = "SolWhisper needs permissions"
-                n.informativeText = "Not granted: \(list). Open System Settings → Privacy & Security to enable."
-                n.hasActionButton = true
-                n.actionButtonTitle = "Open Settings"
-                n.otherButtonTitle = "Later"
-                NSUserNotificationCenter.default.deliver(n)
+                PermissionsNotifier.shared.notifyMissing(list)
             }
         } else {
             DebugLog.shared.log(icon: "✅", label: "All permissions granted")

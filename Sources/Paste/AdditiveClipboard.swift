@@ -73,6 +73,17 @@ final class AdditiveClipboard {
             options: .listenOnly,
             eventsOfInterest: CGEventMask(mask),
             callback: { _, type, event, refcon in
+                // macOS disables an event tap that runs too long or on certain
+                // user input, delivering the disable as a special event type
+                // through this same callback. If we don't re-enable it, the tap
+                // stays dead and clear-on-paste silently stops for the session.
+                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                    if let refcon {
+                        let me = Unmanaged<AdditiveClipboard>.fromOpaque(refcon).takeUnretainedValue()
+                        if let tap = me.keyMonitor { CGEvent.tapEnable(tap: tap, enable: true) }
+                    }
+                    return Unmanaged.passUnretained(event)
+                }
                 guard type == .keyDown,
                       let refcon else { return Unmanaged.passUnretained(event) }
                 let keyCode = event.getIntegerValueField(.keyboardEventKeycode)

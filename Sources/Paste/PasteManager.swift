@@ -141,7 +141,12 @@ enum PasteManager {
                 &focusedRef) == .success,
               let focusedRef else { return false }
 
-        let focused = (focusedRef as! AXUIElement)
+        // `.success` guarantees non-nil but NOT that the value is an
+        // AXUIElement — apps with non-conformant AX or a mid-transition focus
+        // can hand back a different CFType. Force-casting that is an
+        // unrecoverable crash, so verify the CFTypeID first.
+        guard CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else { return false }
+        let focused = focusedRef as! AXUIElement
         let result = AXUIElementSetAttributeValue(
             focused,
             kAXSelectedTextAttribute as CFString,
