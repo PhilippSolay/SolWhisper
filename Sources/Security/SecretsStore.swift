@@ -10,26 +10,36 @@ import SwiftUI
 final class SecretsStore: ObservableObject {
 
     @Published var openRouterApiKey: String {
-        didSet {
-            if oldValue == openRouterApiKey { return }
-            do {
-                try KeychainStore.set(openRouterApiKey, forKey: Keys.openRouterApiKey)
-            } catch {
-                Task { @MainActor in
-                    DebugLog.shared.log(icon: "🔐", label: "Keychain write failed",
-                                        value: "\(Keys.openRouterApiKey): \(error)", ok: false)
-                }
-            }
-        }
+        didSet { writeThrough(openRouterApiKey, oldValue: oldValue, key: Keys.openRouterApiKey) }
+    }
+
+    @Published var deepgramApiKey: String {
+        didSet { writeThrough(deepgramApiKey, oldValue: oldValue, key: Keys.deepgramApiKey) }
     }
 
     enum Keys {
         static let openRouterApiKey = "openRouterApiKey"
+        static let deepgramApiKey = "deepgramApiKey"
+
+        /// Every secret that migrates from a legacy plaintext UserDefault.
+        static let migratable = [openRouterApiKey, deepgramApiKey]
     }
 
     init() {
-        let stored = (try? KeychainStore.string(forKey: Keys.openRouterApiKey)) ?? ""
-        self.openRouterApiKey = stored
+        self.openRouterApiKey = (try? KeychainStore.string(forKey: Keys.openRouterApiKey)) ?? ""
+        self.deepgramApiKey = (try? KeychainStore.string(forKey: Keys.deepgramApiKey)) ?? ""
+    }
+
+    private func writeThrough(_ value: String, oldValue: String, key: String) {
+        guard oldValue != value else { return }
+        do {
+            try KeychainStore.set(value, forKey: key)
+        } catch {
+            Task { @MainActor in
+                DebugLog.shared.log(icon: "🔐", label: "Keychain write failed",
+                                    value: "\(key): \(error)", ok: false)
+            }
+        }
     }
 
     /// One-shot migration from UserDefaults → Keychain, called once at app
@@ -41,31 +51,27 @@ final class SecretsStore: ObservableObject {
     ///
     /// Safe to call on every launch — no-op if no UserDefaults entry exists.
     static func migrateFromUserDefaultsIfNeeded() {
-        let key = Keys.openRouterApiKey
         let defaults = UserDefaults.standard
+        for key in Keys.migratable {
+            guard let legacy = defaults.string(forKey: key), !legacy.isEmpty else { continue }
 
-        guard let legacy = defaults.string(forKey: key), !legacy.isEmpty else {
-            return
-        }
-
-        let existing = (try? KeychainStore.string(forKey: key)) ?? ""
-
-        if existing.isEmpty {
-            do {
-                try KeychainStore.set(legacy, forKey: key)
-                Task { @MainActor in
-                    DebugLog.shared.log(icon: "🔐", label: "Keychain migration",
-                                        value: "\(key) moved from UserDefaults")
+            let existing = (try? KeychainStore.string(forKey: key)) ?? ""
+            if existing.isEmpty {
+                do {
+                    try KeychainStore.set(legacy, forKey: key)
+                    Task { @MainActor in
+                        DebugLog.shared.log(icon: "🔐", label: "Keychain migration",
+                                            value: "\(key) moved from UserDefaults")
+                    }
+                } catch {
+                    Task { @MainActor in
+                        DebugLog.shared.log(icon: "🔐", label: "Keychain migration failed",
+                                            value: "\(key): \(error)", ok: false)
+                    }
+                    continue   // leave the UserDefaults value in place to retry next launch
                 }
-            } catch {
-                Task { @MainActor in
-                    DebugLog.shared.log(icon: "🔐", label: "Keychain migration failed",
-                                        value: "\(error)", ok: false)
-                }
-                return
             }
+            defaults.removeObject(forKey: key)
         }
-
-        defaults.removeObject(forKey: key)
     }
 }

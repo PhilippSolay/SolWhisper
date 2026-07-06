@@ -12,8 +12,8 @@ struct DeepgramDiarizer: DiarizationEngine {
 
     func diarize(audioURL: URL,
                   progress: @MainActor @escaping (Double) -> Void) async throws -> [SpeakerSegment] {
-        // Reuse the existing Deepgram key from UserDefaults (legacy STT key).
-        let apiKey = UserDefaults.standard.string(forKey: "deepgramApiKey") ?? ""
+        // Reuse the existing Deepgram key (Keychain, shared with dictation).
+        let apiKey = (try? KeychainStore.string(forKey: SecretsStore.Keys.deepgramApiKey)) ?? ""
         guard !apiKey.isEmpty else { throw DiarizationError.missingApiKey("deepgram") }
 
         guard FileManager.default.fileExists(atPath: audioURL.path) else {

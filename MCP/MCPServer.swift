@@ -12,6 +12,27 @@ final class MCPServer {
     private let storage = MCPStorage()
     private var initialized = false
 
+    /// Expected token, written by the app to
+    /// `~/Library/Application Support/SolWhisper/mcp-token` when MCP is enabled.
+    /// The MCP client must pass a matching `SOLWHISPER_MCP_TOKEN` env var, so a
+    /// random local process can't spawn this binary and read every transcript
+    /// without the user first enabling MCP and copying the token into its config.
+    private lazy var expectedToken: String? = Self.readAppToken()
+
+    private var isAuthorized: Bool {
+        guard let expected = expectedToken, !expected.isEmpty else { return false }
+        return ProcessInfo.processInfo.environment["SOLWHISPER_MCP_TOKEN"] == expected
+    }
+
+    private static func readAppToken() -> String? {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                                  in: .userDomainMask).first else { return nil }
+        let url = base.appendingPathComponent("SolWhisper/mcp-token")
+        guard let raw = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        let token = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return token.isEmpty ? nil : token
+    }
+
     func run() {
         // Don't buffer output; the parent expects messages immediately.
         setbuf(stdout, nil)
@@ -36,6 +57,17 @@ final class MCPServer {
 
         // Notifications have no `id` and never get a response.
         let isNotification = id == nil
+
+        // Gate every data-returning method behind the token. `initialize`/`ping`
+        // stay open so a misconfigured client connects and gets a clear error.
+        let dataMethods: Set<String> = ["tools/list", "tools/call", "resources/list", "resources/read"]
+        if dataMethods.contains(method) && !isAuthorized {
+            if !isNotification {
+                sendError(id: id, code: -32001,
+                          message: "Unauthorized. Enable MCP in SolWhisper → Settings → Integrations and set SOLWHISPER_MCP_TOKEN in your MCP client config to the token shown there.")
+            }
+            return
+        }
 
         switch method {
         case "initialize":

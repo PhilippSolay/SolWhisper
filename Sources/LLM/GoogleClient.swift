@@ -33,11 +33,14 @@ struct GoogleClient: LLMClient {
         )) ?? ""
         guard !apiKey.isEmpty else { throw LLMError.missingApiKey("google") }
 
-        guard let url = URL(string: "\(Self.baseURL)/\(model):generateContent?key=\(apiKey)") else {
+        guard let url = URL(string: "\(Self.baseURL)/\(model):generateContent") else {
             throw LLMError.http(status: 0, body: "bad url")
         }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
+        // Key in a header, not the URL query — query params leak into proxy /
+        // server access logs and any HTTP-debugging tool the user runs.
+        req.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = Self.requestTimeout
 

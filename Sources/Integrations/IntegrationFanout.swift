@@ -130,7 +130,12 @@ struct IntegrationFanout {
                 failed.append(hook.name)
                 continue
             }
-            let body = MustacheRenderer.render(hook.payloadTemplate, values: values)
+            // JSON payloads must escape interpolated values so a transcript with
+            // a quote/newline can't break the JSON or inject sibling keys.
+            let isJSON = hook.contentType.lowercased().contains("json")
+            let body = isJSON
+                ? MustacheRenderer.renderJSON(hook.payloadTemplate, values: values)
+                : MustacheRenderer.render(hook.payloadTemplate, values: values)
             let secret = (try? KeychainStore.string(forKey: hook.keychainKey)) ?? nil
             let webhook = OutboundWebhook(url: url,
                                            secret: secret,
