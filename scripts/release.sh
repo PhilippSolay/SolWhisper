@@ -250,7 +250,7 @@ NEW_ITEM=$(cat <<NEW_ITEM_EOF
       <pubDate>${PUB_DATE}</pubDate>
       <sparkle:version>${BUILD}</sparkle:version>
       <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
 ${NOTES_BLOCK}      <enclosure url="${DMG_URL}"
                  sparkle:edSignature="${ED_SIG}"
                  length="${ED_LEN}"

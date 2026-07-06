@@ -52,7 +52,8 @@ struct KirosClient {
         req.httpMethod = method
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        req.setValue("SolWhisper/0.4", forHTTPHeaderField: "User-Agent")
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        req.setValue("SolWhisper/\(appVersion)", forHTTPHeaderField: "User-Agent")
         if let body {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = body
