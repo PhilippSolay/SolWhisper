@@ -24,3 +24,4 @@ meeting-summary.zip
 
 # Beta DMG output
 dist/
+.gstack/
