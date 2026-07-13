@@ -94,8 +94,11 @@ actor ChunkWriter {
         let systemFull = systemFramesInChunk >= systemFramesPerChunk
         guard forced || micFull || systemFull else { return }
 
-        // Close existing files (if any) and bump index
-        if !forced { closeCurrentChunk() }
+        // Close the finished chunk, then advance the index BEFORE opening the
+        // next one — otherwise the reopened file is created at the old index
+        // while the following close() looks for index+1, so the atomic rename
+        // no-ops and live audio is stranded in a `.tmp` past chunk 0000.
+        if !forced { closeCurrentChunk(); chunkIndex += 1 }
 
         let i = chunkIndex
         let micURL = chunkDirectory.appendingPathComponent(String(format: "chunk-%04d-mic.wav", i))
@@ -118,8 +121,6 @@ actor ChunkWriter {
             log("Failed to open chunk \(i): \(error)", ok: false)
             return
         }
-
-        if !forced { chunkIndex += 1 }
     }
 
     private func closeCurrentChunk() {
