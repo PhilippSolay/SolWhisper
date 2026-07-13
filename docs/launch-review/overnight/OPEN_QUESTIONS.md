@@ -1,5 +1,26 @@
 # OPEN_QUESTIONS — decisions I'd want from Philipp before changing
 
+## ✅ RESOLVED (Philipp, 2026-07-13) — applied on the review branch
+1. **Translate consent** — not raised; kept label-and-proceed (badge shows "Sent to {provider}").
+2. **Quit-mid-dictation → DISCARD.** Reverted the salvage-to-history fix; ⌘Q mid-dictation discards (a
+   half-finished take isn't worth persisting). `applicationWillTerminate` back to `cancel()`.
+3. **Wrong-app paste → BEST-EFFORT.** Changed from abort to: re-activate the target and retry once on focus
+   loss; only fall back to clipboard if it still won't come forward.
+4. **Beta installer → confirmed dev/tester only.** Added a "NOT FOR PUBLIC RELEASE" header to
+   `installer.applescript`; public path stays the notarized drag-DMG.
+5. **Chunk-size setting → REMOVE PICKER, keep hardcoded 30s.** Deleted the inert control + its `@AppStorage`.
+6. **Voice Translate engine picker → DELETE.** Removed the dead picker + `VoiceTranslateController.translate`/
+   `engineKind`/`engineDefaultsKey` + the dead registered default + the tests that covered them. VT now
+   transparently uses the shared translate engine (`TranslationEngineKind.current`).
+7. **Pen test → SOFT LAUNCH first**, pen-test in parallel/after. No code.
+8. **Supply chain → LATEST-MATCHING.** Not pinning `Package.resolved` / model revisions. No code (left as-is).
+9. **Dead-code deletions** — not raised; the 5 zero-ref functions remain listed in BUGS_FOUND for a later
+   cleanup pass (kept out of the launch diff).
+
+---
+
+*(original questions below, for the record)*
+
 These are judgment calls where I stopped rather than guess. Each affects how a Phase 6 fix is done.
 
 1. **Translate fallback — is silent cloud routing intended at all?** The Farsi-style path sends text to the user's
