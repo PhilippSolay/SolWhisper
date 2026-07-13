@@ -31,6 +31,12 @@ set -euo pipefail
 # Usage: ./scripts/release.sh <version> [release-notes-file]
 # Example: ./scripts/release.sh 0.4.0 notes/v0.4.0.md
 #
+# Optional env:
+#   SW_DRY_RUN=1          build + package + sign everything, then stop before
+#                         appcast/commit/push/release (Info.plist restored)
+#   SW_SKIP_UNIVERSAL=1   skip the universal (arm64 + x86_64) DMG for Intel;
+#                         the appcast arm64 DMG is always built
+#
 # Required:
 #   - gh CLI authenticated (gh auth login)
 #   - Sparkle EdDSA private key in Keychain (run scripts/generate-sparkle-keys.sh once)
@@ -45,8 +51,14 @@ BUNDLE_ID="cloud.solay.SolWhisper"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DMG_NAME="${APP_NAME}-v${VERSION}.dmg"
 DMG_PATH="$PROJECT_DIR/$DMG_NAME"
+UNIVERSAL_DMG_NAME="${APP_NAME}-v${VERSION}-universal.dmg"
+UNIVERSAL_DMG_PATH="$PROJECT_DIR/$UNIVERSAL_DMG_NAME"
 APPCAST="$PROJECT_DIR/appcast.xml"
 INFO_PLIST="$PROJECT_DIR/Resources/Info.plist"
+# Explicit DerivedData path for THIS checkout, so the release always packages the
+# app this worktree just built — never a stale SolWhisper-<hash> DerivedData dir
+# left behind by another checkout. (build/ is gitignored.)
+DERIVED_DATA="$PROJECT_DIR/build"
 
 cd "$PROJECT_DIR"
 
@@ -102,6 +114,7 @@ XCODEBUILD_ARGS=(
     -project "$PROJECT_DIR/$APP_NAME.xcodeproj"
     -scheme "$APP_NAME"
     -configuration Release
+    -derivedDataPath "$DERIVED_DATA"
     clean build
 )
 if [ -n "${SW_TEAM_ID:-}" ]; then
@@ -110,16 +123,14 @@ fi
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   xcodebuild "${XCODEBUILD_ARGS[@]}" 2>&1 | grep -E "(error:|BUILD SUCCEEDED|BUILD FAILED)" | head -3
 
-# Pick the NEWEST Release product by mtime. A plain `find … | head -1`
-# picks the alphabetically-first DerivedData dir, which can be a stale
-# build from a months-old release (Xcode keeps old DerivedData dirs around
-# when the project identity hash changes). That bug shipped a v0.5.1 binary
-# inside the v0.6.0 / v0.6.1 DMGs. mtime-sort always selects the build we
-# just produced.
-APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData/${APP_NAME}-*/Build/Products/Release -name "$APP_NAME.app" -maxdepth 1 2>/dev/null \
-            | xargs -I{} stat -f "%m {}" 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-)
-if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
-    echo "  ✗ Build product not found"
+# Select the product deterministically from our explicit -derivedDataPath. The
+# old `find … DerivedData/SolWhisper-*` + newest-mtime heuristic could latch onto
+# a stale build from another checkout — that bug once shipped a v0.5.1 binary
+# inside the v0.6.0 / v0.6.1 DMGs. Pinning derivedDataPath removes the ambiguity;
+# the version guard below stays as a backstop.
+APP_PATH="$DERIVED_DATA/Build/Products/Release/$APP_NAME.app"
+if [ ! -d "$APP_PATH" ]; then
+    echo "  ✗ Build product not found at $APP_PATH"
     exit 1
 fi
 
@@ -140,9 +151,11 @@ echo "  ✓ Built $APP_NAME $VERSION (build $BUILD)"
 
 echo "▶ Package DMG"
 
-STAGING="/tmp/$APP_NAME-release-staging"
-rm -rf "$STAGING" "$DMG_PATH"
-mkdir -p "$STAGING"
+# mktemp -d avoids a predictable /tmp path a co-tenant could pre-create or
+# symlink-race on a shared host.
+STAGING=$(mktemp -d "${TMPDIR:-/tmp}/${APP_NAME}-release-staging.XXXXXX")
+[ -n "$STAGING" ] && [ -d "$STAGING" ] || { echo "  ✗ staging mktemp failed"; exit 1; }
+rm -f "$DMG_PATH"
 cp -R "$APP_PATH" "$STAGING/$APP_NAME.app"
 
 # CRITICAL: re-sign so Sparkle.framework's Team ID matches the host's
@@ -155,50 +168,61 @@ cp -R "$APP_PATH" "$STAGING/$APP_NAME.app"
 #   2. Neither set → ad-hoc. Local dev iteration; users will hit Gatekeeper +
 #      get TCC reset on every install.
 ENTITLEMENTS="$PROJECT_DIR/Resources/SolWhisper.entitlements"
-if [ -n "${SW_DEVELOPER_ID:-}" ] && [ -n "${SW_NOTARIZE_PROFILE:-}" ]; then
-    echo "  ▸ Developer ID signing: $SW_DEVELOPER_ID"
-    codesign --force --deep --options runtime --timestamp \
-        --entitlements "$ENTITLEMENTS" \
-        --sign "$SW_DEVELOPER_ID" "$STAGING/$APP_NAME.app"
-    if ! codesign --verify --deep --strict --verbose=2 "$STAGING/$APP_NAME.app" 2>/dev/null; then
-        echo "  ✗ codesign verify failed on Developer ID-signed bundle"
-        exit 1
-    fi
-    echo "  ✓ Bundle signed with Developer ID + hardened runtime"
 
-    # Notarize: zip the bundle, submit, wait for ticket, staple it back to the
-    # bundle. Stapling is what lets the app launch offline without contacting
-    # Apple every time.
-    echo "▶ Notarize (this can take 1–10 minutes)"
-    NOTARY_ZIP="/tmp/$APP_NAME-notarize.zip"
-    rm -f "$NOTARY_ZIP"
-    /usr/bin/ditto -c -k --keepParent "$STAGING/$APP_NAME.app" "$NOTARY_ZIP"
-    if ! xcrun notarytool submit "$NOTARY_ZIP" \
-            --keychain-profile "$SW_NOTARIZE_PROFILE" \
-            --wait; then
-        echo "  ✗ notarytool submission failed — check output above"
-        rm -f "$NOTARY_ZIP"
-        exit 1
+# Signs a staged bundle. Developer ID + notarize + staple when both
+# SW_DEVELOPER_ID and SW_NOTARIZE_PROFILE are set, ad-hoc otherwise.
+# Shared by the arm64 and universal packaging paths.
+sign_and_notarize() {
+    local app="$1"
+    if [ -n "${SW_DEVELOPER_ID:-}" ] && [ -n "${SW_NOTARIZE_PROFILE:-}" ]; then
+        echo "  ▸ Developer ID signing: $SW_DEVELOPER_ID"
+        codesign --force --deep --options runtime --timestamp \
+            --entitlements "$ENTITLEMENTS" \
+            --sign "$SW_DEVELOPER_ID" "$app"
+        if ! codesign --verify --deep --strict --verbose=2 "$app" 2>/dev/null; then
+            echo "  ✗ codesign verify failed on Developer ID-signed bundle"
+            exit 1
+        fi
+        echo "  ✓ Bundle signed with Developer ID + hardened runtime"
+
+        # Notarize: zip the bundle, submit, wait for ticket, staple it back to
+        # the bundle. Stapling is what lets the app launch offline without
+        # contacting Apple every time.
+        echo "▶ Notarize (this can take 1–10 minutes)"
+        local notary_dir
+        notary_dir=$(mktemp -d "${TMPDIR:-/tmp}/${APP_NAME}-notarize.XXXXXX")
+        [ -n "$notary_dir" ] && [ -d "$notary_dir" ] || { echo "  ✗ notarize mktemp failed"; exit 1; }
+        local notary_zip="$notary_dir/$APP_NAME.zip"
+        /usr/bin/ditto -c -k --keepParent "$app" "$notary_zip"
+        if ! xcrun notarytool submit "$notary_zip" \
+                --keychain-profile "$SW_NOTARIZE_PROFILE" \
+                --wait; then
+            echo "  ✗ notarytool submission failed — check output above"
+            rm -rf "$notary_dir"
+            exit 1
+        fi
+        rm -rf "$notary_dir"
+        xcrun stapler staple "$app"
+        if ! xcrun stapler validate "$app" >/dev/null 2>&1; then
+            echo "  ✗ stapler validate failed"
+            exit 1
+        fi
+        echo "  ✓ Notarized + stapled"
+    else
+        if [ -n "${SW_DEVELOPER_ID:-}" ] || [ -n "${SW_NOTARIZE_PROFILE:-}" ]; then
+            echo "  ⚠ Both SW_DEVELOPER_ID and SW_NOTARIZE_PROFILE must be set together."
+            echo "    Falling back to ad-hoc."
+        fi
+        codesign --force --deep --sign - "$app" 2>/dev/null
+        if ! codesign --verify --deep "$app" 2>/dev/null; then
+            echo "  ✗ codesign verify failed on staged bundle"
+            exit 1
+        fi
+        echo "  ✓ Bundle re-signed ad-hoc (no notarization — testers will see Gatekeeper)"
     fi
-    rm -f "$NOTARY_ZIP"
-    xcrun stapler staple "$STAGING/$APP_NAME.app"
-    if ! xcrun stapler validate "$STAGING/$APP_NAME.app" >/dev/null 2>&1; then
-        echo "  ✗ stapler validate failed"
-        exit 1
-    fi
-    echo "  ✓ Notarized + stapled"
-else
-    if [ -n "${SW_DEVELOPER_ID:-}" ] || [ -n "${SW_NOTARIZE_PROFILE:-}" ]; then
-        echo "  ⚠ Both SW_DEVELOPER_ID and SW_NOTARIZE_PROFILE must be set together."
-        echo "    Falling back to ad-hoc."
-    fi
-    codesign --force --deep --sign - "$STAGING/$APP_NAME.app" 2>/dev/null
-    if ! codesign --verify --deep "$STAGING/$APP_NAME.app" 2>/dev/null; then
-        echo "  ✗ codesign verify failed on staged bundle"
-        exit 1
-    fi
-    echo "  ✓ Bundle re-signed ad-hoc (no notarization — testers will see Gatekeeper)"
-fi
+}
+
+sign_and_notarize "$STAGING/$APP_NAME.app"
 
 ln -s /Applications "$STAGING/Applications"
 hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" -ov -format UDZO "$DMG_PATH" >/dev/null
@@ -211,7 +235,10 @@ echo "  ✓ $DMG_NAME ($(printf '%.1f' "$(echo "$DMG_SIZE / 1048576" | bc -l)") 
 
 echo "▶ Sign DMG (Sparkle EdDSA)"
 
-SIGN_TOOL=$(find ~/Library/Developer/Xcode/DerivedData -name "sign_update" -path "*/Sparkle*" 2>/dev/null | head -1)
+# Prefer the sign_update vended into our explicit derivedDataPath (that's where
+# the build above put Sparkle's SPM artifacts); fall back to the default
+# DerivedData location for any cached copy.
+SIGN_TOOL=$(find "$DERIVED_DATA" ~/Library/Developer/Xcode/DerivedData -name "sign_update" -path "*/Sparkle*" 2>/dev/null | head -1)
 if [ -z "$SIGN_TOOL" ]; then
     echo "  ✗ sign_update not found (build the project first to fetch Sparkle SPM)"
     exit 1
@@ -227,12 +254,176 @@ if [ -z "$ED_SIG" ] || [ -z "$ED_LEN" ]; then
 fi
 echo "  ✓ EdDSA signed"
 
+# ── Universal DMG (arm64 + x86_64) ───────────────────────────────────────────
+#
+# Extra release asset for Intel Macs. The appcast keeps pointing at the thin
+# arm64 DMG above — existing Sparkle users are Apple Silicon and shouldn't
+# pull 2× the bytes. Runs BEFORE the appcast/commit step because the bump
+# phase re-bumps CFBundleVersion: committing after this build keeps the
+# committed plist monotonic and the tree clean. (The universal bundle carries
+# a build number one tick above the arm64 one — harmless, it's not in the
+# appcast.) Skip with SW_SKIP_UNIVERSAL=1.
+
+if [ -z "${SW_SKIP_UNIVERSAL:-}" ]; then
+    echo "▶ Build universal (arm64 + x86_64)"
+
+    # No `clean`: the arm64 objects from the build above are reused; only the
+    # x86_64 slices compile fresh. The plain-build default picks the concrete
+    # "My Mac (arm64)" destination, so ARCHS/ONLY_ACTIVE_ARCH must be forced.
+    XCODEBUILD_UNIVERSAL_ARGS=(
+        -project "$PROJECT_DIR/$APP_NAME.xcodeproj"
+        -scheme "$APP_NAME"
+        -configuration Release
+        -derivedDataPath "$DERIVED_DATA"
+        build
+        ARCHS="arm64 x86_64"
+        ONLY_ACTIVE_ARCH=NO
+    )
+    if [ -n "${SW_TEAM_ID:-}" ]; then
+        XCODEBUILD_UNIVERSAL_ARGS+=(DEVELOPMENT_TEAM="$SW_TEAM_ID" CODE_SIGN_IDENTITY="Developer ID Application")
+    fi
+    DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+      xcodebuild "${XCODEBUILD_UNIVERSAL_ARGS[@]}" 2>&1 | grep -E "(error:|BUILD SUCCEEDED|BUILD FAILED)" | head -3
+
+    # Same explicit-derivedDataPath selection + version guard as the arm64 build.
+    # The universal build reuses $DERIVED_DATA (arm64 objects are already there)
+    # and overwrites the Release product in place with the fat binary — the arm64
+    # DMG was already packaged + EdDSA-signed above, so overwriting is safe.
+    UAPP_PATH="$DERIVED_DATA/Build/Products/Release/$APP_NAME.app"
+    if [ ! -d "$UAPP_PATH" ]; then
+        echo "  ✗ Universal build product not found at $UAPP_PATH"
+        exit 1
+    fi
+    UAPP_SHORT=$(plutil -extract CFBundleShortVersionString raw "$UAPP_PATH/Contents/Info.plist")
+    if [ "$UAPP_SHORT" != "$VERSION" ]; then
+        echo "  ✗ Universal app reports version $UAPP_SHORT but releasing $VERSION."
+        echo "    Stale build product selected: $UAPP_PATH"
+        exit 1
+    fi
+    LIPO_OUT=$(lipo -info "$UAPP_PATH/Contents/MacOS/$APP_NAME")
+    if ! echo "$LIPO_OUT" | grep -q "x86_64" || ! echo "$LIPO_OUT" | grep -q "arm64"; then
+        echo "  ✗ Universal binary is missing an architecture:"
+        echo "    $LIPO_OUT"
+        exit 1
+    fi
+    echo "  ✓ Universal binary verified (x86_64 + arm64)"
+
+    echo "▶ Package universal DMG"
+    USTAGING=$(mktemp -d "${TMPDIR:-/tmp}/${APP_NAME}-release-staging-universal.XXXXXX")
+    [ -n "$USTAGING" ] && [ -d "$USTAGING" ] || { echo "  ✗ universal staging mktemp failed"; exit 1; }
+    rm -f "$UNIVERSAL_DMG_PATH"
+    cp -R "$UAPP_PATH" "$USTAGING/$APP_NAME.app"
+    sign_and_notarize "$USTAGING/$APP_NAME.app"
+    ln -s /Applications "$USTAGING/Applications"
+    hdiutil create -volname "$APP_NAME" -srcfolder "$USTAGING" -ov -format UDZO "$UNIVERSAL_DMG_PATH" >/dev/null
+    rm -rf "$USTAGING"
+    UDMG_SIZE=$(stat -f%z "$UNIVERSAL_DMG_PATH")
+    echo "  ✓ $UNIVERSAL_DMG_NAME ($(printf '%.1f' "$(echo "$UDMG_SIZE / 1048576" | bc -l)") MB)"
+fi
+
+# ── Dry run stops here ───────────────────────────────────────────────────────
+
+if [ -n "${SW_DRY_RUN:-}" ]; then
+    echo "▶ Dry run — stopping before appcast/commit/release"
+    git checkout -- "$INFO_PLIST"
+    echo "  ✓ Built $DMG_NAME"
+    if [ -f "$UNIVERSAL_DMG_PATH" ]; then
+        echo "  ✓ Built $UNIVERSAL_DMG_NAME"
+    fi
+    echo "  ✓ $INFO_PLIST restored (git checkout)"
+    echo "  Skipped: appcast update, whats-new, git commit/push, gh release, URL verify."
+    exit 0
+fi
+
+# ── Ad-hoc release guard ─────────────────────────────────────────────────────
+#
+# Everything below PUBLISHES (GitHub release + appcast push to main). When
+# neither SW_DEVELOPER_ID nor SW_NOTARIZE_PROFILE is set the bundle was only
+# ad-hoc signed — not notarized — so real users hit Gatekeeper and lose their
+# granted permissions (TCC reset) on every install. Refuse to publish one unless
+# it's an explicit, intentional ad-hoc / test release. SW_DRY_RUN already exited
+# above, so dry-run builds never need the override.
+if [ -z "${SW_DEVELOPER_ID:-}" ] || [ -z "${SW_NOTARIZE_PROFILE:-}" ]; then
+    if [ -z "${SW_ALLOW_ADHOC_RELEASE:-}" ]; then
+        echo "  ✗ Refusing to publish an ad-hoc-signed (non-notarized) build to real users."
+        echo "    SW_DEVELOPER_ID and/or SW_NOTARIZE_PROFILE are unset, so the DMG is only"
+        echo "    ad-hoc signed. Shipping it means Gatekeeper warnings and a TCC permission"
+        echo "    reset for every user on every install."
+        echo ""
+        echo "    Ship a proper notarized release — enroll in the Apple Developer Program, then:"
+        echo "      export SW_DEVELOPER_ID=\"Developer ID Application: Your Name (TEAMID)\""
+        echo "      export SW_NOTARIZE_PROFILE=\"SolWhisperNotary\"   # xcrun notarytool store-credentials"
+        echo ""
+        echo "    …or, for an intentional ad-hoc / internal test release, re-run with the override:"
+        echo "      SW_ALLOW_ADHOC_RELEASE=1 $0 $VERSION${NOTES_FILE:+ $NOTES_FILE}"
+        echo ""
+        echo "    …or build + package without publishing:  SW_DRY_RUN=1 $0 $VERSION"
+        exit 1
+    fi
+    echo "  ⚠ SW_ALLOW_ADHOC_RELEASE=1 — publishing an AD-HOC-signed (non-notarized) build."
+    echo "    Users will see Gatekeeper warnings and TCC permission resets on install."
+fi
+
+# Release-asset download URLs — defined before the release is created so the
+# post-upload verify and the final summary can both reference them.
+DMG_URL="https://github.com/$REPO/releases/download/v${VERSION}/${DMG_NAME}"
+UNIVERSAL_DMG_URL="https://github.com/$REPO/releases/download/v${VERSION}/${UNIVERSAL_DMG_NAME}"
+
+# ── Create GitHub release (upload DMG assets) ────────────────────────────────
+#
+# ORDER OF OPERATIONS: the release is created, the DMG assets uploaded, and the
+# arm64 download URL verified reachable (HTTP 200) BEFORE the appcast.xml change
+# is committed/pushed to main. If the upload or the 200-check fails we exit
+# non-zero here — the appcast is never pushed, so Sparkle clients can't be sent
+# to a DMG URL that 404s.
+
+echo "▶ Create GitHub release"
+
+RELEASE_ASSETS=("$DMG_PATH")
+if [ -f "$UNIVERSAL_DMG_PATH" ]; then
+    RELEASE_ASSETS+=("$UNIVERSAL_DMG_PATH")
+fi
+if [ -n "$NOTES_FILE" ] && [ -f "$NOTES_FILE" ]; then
+    gh release create "v${VERSION}" --repo "$REPO" --title "$APP_NAME v${VERSION}" --notes-file "$NOTES_FILE" "${RELEASE_ASSETS[@]}" >/dev/null
+else
+    gh release create "v${VERSION}" --repo "$REPO" --title "$APP_NAME v${VERSION}" --notes "Release v${VERSION}" "${RELEASE_ASSETS[@]}" >/dev/null
+fi
+echo "  ✓ Released v${VERSION} (${#RELEASE_ASSETS[@]} DMG asset(s))"
+
+# ── Verify download URL (before the appcast is pushed) ───────────────────────
+
+echo "▶ Verify download URL"
+
+# Wait a moment for GitHub CDN
+sleep 3
+HTTP_CODE=$(curl -sIL "$DMG_URL" -o /dev/null -w "%{http_code}")
+if [ "$HTTP_CODE" != "200" ]; then
+    echo "  ✗ DMG URL returned HTTP $HTTP_CODE — the uploaded asset is not reachable:"
+    echo "    $DMG_URL"
+    echo "    Aborting BEFORE the appcast is pushed, so Sparkle is never pointed at a 404."
+    echo "    The GitHub release exists; fix the asset (or delete the release) and re-run."
+    exit 1
+fi
+echo "  ✓ DMG downloads (HTTP 200)"
+
+if [ -f "$UNIVERSAL_DMG_PATH" ]; then
+    HTTP_CODE_U=$(curl -sIL "$UNIVERSAL_DMG_URL" -o /dev/null -w "%{http_code}")
+    if [ "$HTTP_CODE_U" != "200" ]; then
+        echo "  ⚠ Universal DMG URL returned HTTP $HTTP_CODE_U — check the release page"
+        echo "    (the appcast points at the arm64 DMG only, so this does not block the release)"
+    else
+        echo "  ✓ Universal DMG downloads (HTTP 200)"
+    fi
+fi
+
 # ── Update appcast.xml (PREPEND new item, preserve history) ──────────────────
+#
+# Reached only after the DMG upload is verified reachable above, so the pushed
+# appcast always references a live asset.
 
 echo "▶ Update appcast.xml"
 
 PUB_DATE=$(date -R)
-DMG_URL="https://github.com/$REPO/releases/download/v${VERSION}/${DMG_NAME}"
 
 # Build the new <item> block as a here-doc (release notes optional)
 NOTES_BLOCK=""
@@ -312,30 +503,6 @@ git commit -m "Release v${VERSION}" >/dev/null || true
 git push origin main >/dev/null
 echo "  ✓ Pushed to main"
 
-# ── Create GitHub release ────────────────────────────────────────────────────
-
-echo "▶ Create GitHub release"
-
-if [ -n "$NOTES_FILE" ] && [ -f "$NOTES_FILE" ]; then
-    gh release create "v${VERSION}" --repo "$REPO" --title "$APP_NAME v${VERSION}" --notes-file "$NOTES_FILE" "$DMG_PATH" >/dev/null
-else
-    gh release create "v${VERSION}" --repo "$REPO" --title "$APP_NAME v${VERSION}" --notes "Release v${VERSION}" "$DMG_PATH" >/dev/null
-fi
-echo "  ✓ Released v${VERSION}"
-
-# ── Post-upload verify ───────────────────────────────────────────────────────
-
-echo "▶ Verify download URL"
-
-# Wait a moment for GitHub CDN
-sleep 3
-HTTP_CODE=$(curl -sIL "$DMG_URL" -o /dev/null -w "%{http_code}")
-if [ "$HTTP_CODE" != "200" ]; then
-    echo "  ⚠ DMG URL returned HTTP $HTTP_CODE — check the release page"
-else
-    echo "  ✓ DMG downloads (HTTP 200)"
-fi
-
 # ── Done ─────────────────────────────────────────────────────────────────────
 
 if [ -n "${SW_NOTARIZE_PROFILE:-}" ]; then
@@ -349,12 +516,18 @@ else
   TCC permissions reset because CDHash changed."
 fi
 
+UNIVERSAL_LINE=""
+if [ -f "$UNIVERSAL_DMG_PATH" ]; then
+    UNIVERSAL_LINE="  $UNIVERSAL_DMG_URL   (universal — Intel + Apple Silicon)
+"
+fi
+
 cat <<DONE
 
 Released $APP_NAME v${VERSION} (build $BUILD)
   https://github.com/$REPO/releases/tag/v${VERSION}
   $DMG_URL
-  https://raw.githubusercontent.com/$REPO/main/appcast.xml
+${UNIVERSAL_LINE}  https://raw.githubusercontent.com/$REPO/main/appcast.xml
 
 For testers (fresh install):
   $INSTALL_NOTE

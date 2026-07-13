@@ -72,10 +72,12 @@ struct KirosIntegration {
                      transcriptMarkdown: String,
                      summaryMarkdown: String) async throws -> Int {
         guard isConfigured,
-              let url = URL(string: UserDefaults.standard.string(forKey: urlKey) ?? ""),
               let token = ((try? KeychainStore.string(forKey: tokenKeychainKey)) ?? nil),
               !token.isEmpty
         else { return -1 }
+        // Require https (or http to loopback): the bearer token + tasks must not
+        // egress over cleartext, and a bad scheme should fail loudly.
+        let url = try IntegrationURL.validated(UserDefaults.standard.string(forKey: urlKey) ?? "")
 
         guard let resolved = LLMResolver.resolve(.summary) else {
             throw KirosIntegrationError.noLLM

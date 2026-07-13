@@ -22,20 +22,6 @@ struct OllamaClient: LLMClient {
         } catch { return false }
     }
 
-    /// Lists locally-installed models. Used by the Settings model picker.
-    static func listModels(at baseURL: URL = URL(string: "http://localhost:11434")!) async throws -> [String] {
-        var req = URLRequest(url: baseURL.appendingPathComponent("api/tags"))
-        req.httpMethod = "GET"
-        req.timeoutInterval = 3
-        let (data, _) = try await URLSession.shared.data(for: req)
-        struct TagsResponse: Decodable {
-            struct Model: Decodable { let name: String }
-            let models: [Model]
-        }
-        let decoded = try JSONDecoder().decode(TagsResponse.self, from: data)
-        return decoded.models.map(\.name).sorted()
-    }
-
     func complete(messages: [LLMMessage],
                   model: String,
                   temperature: Double,

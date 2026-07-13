@@ -3,6 +3,7 @@ import AVFoundation
 import Combine
 import SwiftUI
 import Sparkle
+import UserNotifications
 
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -95,10 +96,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             "translateHotkeyModifierMask":   11,  // ⌃⌥⌘
             "translateTargetLanguage":       "en",
             // Voice-translate (speak → transcribe → translate → paste). Hotkey
-            // ships unset (user assigns it in Settings → Hotkey). Apple is the
-            // default engine per the "Apple first" brief; factory falls back to
-            // LLM automatically when Apple Translation is unavailable (<macOS 15).
-            "voiceTranslateEngine":          TranslationEngineKind.apple.rawValue,
+            // ships unset (user assigns it in Settings → Hotkey). It uses the
+            // shared translation engine (`TranslationEngineKind.current`), so
+            // there's no VT-specific engine default — only the target language.
             "voiceTranslateTargetLanguage":  "en",
             // Translate engine + routing — registered alongside the existing
             // role defaults so a fresh install has the same fallback shape
@@ -245,8 +245,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // Best-effort clean teardown on quit. If a dictation is mid-flight, tear
         // it down so the audio engine/temp file is flushed and closed rather
-        // than left half-written. Meetings are chunk-written continuously and
-        // recovered on next launch (see CrashRecovery), so they need no action.
+        // than left half-written. A dictation the user never Stopped is
+        // discarded, not saved (product decision — a half-finished take isn't
+        // worth persisting to history). Meetings are chunk-written continuously
+        // and recovered on next launch (see CrashRecovery), so they need no action.
         if transcriptionController.isRecording {
             transcriptionController.cancel()
         }
@@ -364,6 +366,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// surface a recovery dialog. The user can recover (process chunks into a
     /// real meeting) or discard.
     private func scanForOrphanMeetingsOnLaunch() {
+        reclaimInterruptedImportsOnLaunch()
         let orphans = CrashRecovery.scan(in: meetingStore)
         guard !orphans.isEmpty else { return }
         // Defer slightly so the dialog isn't competing with the missing-permissions
@@ -375,6 +378,37 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // queue subsequent recoveries via onProcessed.
             self.queueRecovery(toRecover)
         }
+    }
+
+    /// Re-runs imports interrupted (crash/quit) before they finished
+    /// transcribing. The copied `audio.<ext>` is complete, so we re-enqueue it
+    /// and trash the blank shell meeting — otherwise it sits in the list
+    /// forever with no transcript and no way to finish.
+    private func reclaimInterruptedImportsOnLaunch() {
+        let interrupted = CrashRecovery.interruptedImports(in: meetingStore)
+        guard !interrupted.isEmpty else { return }
+        let fm = FileManager.default
+        var reenqueue: [URL] = []
+        for item in interrupted {
+            // Move the audio OUT of the meeting folder before deleting the
+            // shell — ImportQueue copies the source lazily when it processes
+            // the item, so the file must survive the delete below.
+            let staged = fm.temporaryDirectory
+                .appendingPathComponent("solwhisper-resumed-import-\(item.meeting.id.uuidString)-\(item.audioURL.lastPathComponent)")
+            try? fm.removeItem(at: staged)
+            do {
+                try fm.moveItem(at: item.audioURL, to: staged)
+            } catch {
+                DebugLog.shared.log(icon: "📥", label: "Import resume skipped",
+                                    value: "couldn't stage \(item.audioURL.lastPathComponent): \(error)", ok: false)
+                continue
+            }
+            reenqueue.append(staged)
+            try? meetingStore.delete(item.meeting)
+            DebugLog.shared.log(icon: "📥", label: "Resuming interrupted import",
+                                value: item.audioURL.lastPathComponent)
+        }
+        if !reenqueue.isEmpty { _ = importQueue.enqueue(reenqueue) }
     }
 
     /// Recovers orphans one at a time. Each recovery's `onProcessed` callback
@@ -447,7 +481,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
               let data = try? Data(contentsOf: url),
               let secrets = try? JSONDecoder().decode([String: String].self, from: data) else { return }
 
-        let keychainKeys: Set<String> = [SecretsStore.Keys.openRouterApiKey]
+        // Route every Keychain-backed secret to the Keychain, not just
+        // openRouter — otherwise a seeded key (e.g. Deepgram) lands in
+        // plaintext UserDefaults. Sourced from the migration list so new
+        // secrets are covered automatically.
+        let keychainKeys = Set(SecretsStore.Keys.migratable)
 
         for (key, value) in secrets where !value.isEmpty {
             if keychainKeys.contains(key) {
@@ -727,13 +765,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         transcriptionController.stopRecording { [weak self] text in
             Task { @MainActor in
-                // Force-remove overlay immediately so it can't intercept focus/events
-                self?.overlayWindowController?.forceHide()
-
                 guard let text = text, !text.isEmpty else {
+                    // Nil/empty means nothing was transcribed — a genuinely
+                    // silent take, or (on the Apple→WhisperKit rescue path) a
+                    // 60s offline-transcribe timeout/failure. Either way the
+                    // overlay was showing processing dots; force-hiding it here
+                    // makes the pill just vanish with no explanation. Show a
+                    // brief banner instead so "I dictated and nothing happened"
+                    // becomes a visible, recoverable moment.
                     DebugLog.shared.log(icon: "🛑", label: "No text to paste", ok: false)
+                    self?.overlayWindowController?.showAudioError(
+                        "Nothing was transcribed — try again. If you have Apple Dictation off, download a WhisperKit model in Settings → Models.",
+                        duration: 3.0) { [weak self] in
+                        self?.overlayWindowController?.hideOverlay()
+                    }
                     return
                 }
+
+                // Force-remove overlay immediately so it can't intercept focus/events
+                self?.overlayWindowController?.forceHide()
 
                 // Voice-translate mode: hand the transcript to the SAME
                 // translation bubble Text Snap uses — proven Apple/LLM
@@ -890,9 +940,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func presentImportReport(_ report: ImportQueue.BatchReport) {
         let total = report.succeeded.count + report.failed.count + report.cancelled.count
         guard total > 0 else { return }
+        // A long import the user walked away from ("dropped a 2-hour file, went
+        // to lunch") otherwise finishes silently — a lone success shows no
+        // alert. Fire a notification so it surfaces even when the Transcripts
+        // window isn't frontmost.
+        Self.postImportCompletionNotification(report)
         DispatchQueue.main.async { [weak self] in
             self?.showImportReport(report, total: total)
         }
+    }
+
+    private static func postImportCompletionNotification(_ report: ImportQueue.BatchReport) {
+        let n = report.succeeded.count
+        guard n > 0 else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Import finished"
+        content.body = n == 1
+            ? "Finished transcribing \(report.succeeded.first ?? "your file")."
+            : "Finished importing \(n) files."
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
     }
 
     private func showImportReport(_ report: ImportQueue.BatchReport, total: Int) {
@@ -941,8 +1008,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: - Onboarding
-
-    @objc func openOnboardingFromMenu() { openOnboarding() }
 
     /// Triggers a manual Sparkle update check from the About pane button.
     func checkForUpdatesNow() {

@@ -33,19 +33,17 @@ enum MCPTokenStore {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    /// Rotates the token (invalidates any previously-configured client).
-    @discardableResult
-    static func regenerate() -> String {
-        let token = generate()
-        write(token)
-        return token
-    }
-
     // MARK: - Private
 
     private static func generate() -> String {
         var bytes = [UInt8](repeating: 0, count: 32)   // 256 bits
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        guard status == errSecSuccess else {
+            // Never emit a predictable (all-zero) token. SecRandomCopyBytes
+            // failing is near-impossible, but if it ever does we fall back to
+            // the platform CSPRNG rather than shipping a guessable MCP token.
+            return (0..<32).map { _ in String(format: "%02x", UInt8.random(in: .min ... .max)) }.joined()
+        }
         return bytes.map { String(format: "%02x", $0) }.joined()
     }
 
@@ -53,8 +51,16 @@ enum MCPTokenStore {
         guard let url = tokenFileURL else { return }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
-        try? token.write(to: url, atomically: true, encoding: .utf8)
-        // Owner read/write only.
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        // Create the file 0600 up front. Writing atomically first (a fresh temp
+        // file at the umask default of 0644) and only chmod-ing afterwards left
+        // a brief window where the token was world-readable.
+        let data = Data(token.utf8)
+        if !FileManager.default.createFile(atPath: url.path, contents: data,
+                                           attributes: [.posixPermissions: 0o600]) {
+            // Fallback: write then tighten perms.
+            try? data.write(to: url)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                   ofItemAtPath: url.path)
+        }
     }
 }

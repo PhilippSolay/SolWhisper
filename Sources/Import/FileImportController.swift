@@ -8,8 +8,20 @@ import AppKit
 /// (the AppDelegate-owned progress window) can remain decoupled from this
 /// controller. One controller instance is created per import operation and
 /// thrown away on completion.
+/// Abstraction over the concrete import controller so `ImportQueue` can be
+/// driven by a stub in tests (the queue's serial pump — dedup, advance,
+/// continue-on-failure, cancel serialization — is otherwise untestable because
+/// the real controller performs live WhisperKit transcription). The real
+/// `FileImportController` is the only production conformer.
 @MainActor
-final class FileImportController {
+protocol ImportControlling: AnyObject {
+    var delegate: FileImportControllerDelegate? { get set }
+    func begin(audioURL: URL)
+    func cancel()
+}
+
+@MainActor
+final class FileImportController: ImportControlling {
 
     enum Phase: Equatable {
         case validating
@@ -233,6 +245,6 @@ final class FileImportController {
 
 @MainActor
 protocol FileImportControllerDelegate: AnyObject {
-    func fileImport(_ controller: FileImportController,
+    func fileImport(_ controller: any ImportControlling,
                     didEnter phase: FileImportController.Phase)
 }

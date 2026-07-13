@@ -50,10 +50,27 @@ struct LanguagesSettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Languages")
-        .task { if !loaded { await refreshAll(); loaded = true } }
+        .task {
+            if !loaded { await refreshAll(); loaded = true }
+            consumePendingDownload()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openSettingsSection)) { _ in
+            // Deep link fired while this pane is already on screen.
+            consumePendingDownload()
+        }
         .modifier(PackDownloadModifier(pair: downloadPairBinding, onFinish: { code in
             Task { await refresh(code); busyCode = nil }
         }))
+    }
+
+    /// Starts the download a translate flow requested via `SettingsDeepLink`
+    /// (pack was missing mid-translation). Runs after `refreshAll` so the
+    /// readiness check below is meaningful.
+    private func consumePendingDownload() {
+        guard let code = SettingsDeepLink.pendingLanguageDownload else { return }
+        SettingsDeepLink.pendingLanguageDownload = nil
+        guard busyCode == nil, status[code] != .ready, status[code] != .llmFallback else { return }
+        startDownload(code)
     }
 
     // MARK: - Row
@@ -85,6 +102,8 @@ struct LanguagesSettingsView: View {
                     .buttonStyle(.borderedProminent)
             case .unsupported:
                 Text("Not supported").font(.caption).foregroundColor(.secondary)
+            case .llmFallback:
+                Text("Uses AI model").font(.caption).foregroundColor(.secondary)
             case .modelDependent, .none:
                 ProgressView().controlSize(.small)
             }
@@ -96,6 +115,7 @@ struct LanguagesSettingsView: View {
         case .ready:          return "Installed"
         case .needsDownload:  return "Available — not downloaded"
         case .unsupported:    return "Not available on this Mac"
+        case .llmFallback:    return "Not supported by Apple — translations use your AI model"
         case .modelDependent, .none: return "Checking…"
         }
     }

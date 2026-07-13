@@ -622,6 +622,15 @@ struct MeetingDetailView: View {
                 Text("·")
                 Text(meeting.transcriptionBackend)
                     .font(.system(.caption, design: .monospaced))
+                if meeting.micOnly == true {
+                    Label("Mic only", systemImage: "mic")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.orange)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Color.orange.opacity(0.15), in: Capsule())
+                        .help("Screen Recording wasn't enabled, so only your microphone was captured — not the other participants.")
+                }
             }
             .font(.system(size: 12))
             .foregroundColor(.secondary)
@@ -987,6 +996,21 @@ struct MeetingDetailView: View {
         if meetingController.processingMeetingID == meeting.id,
            meetingController.processingPhase != nil { return true }
         return retranscribing || cleaning || diarizing || summarizing
+    }
+
+    /// True while transcription is genuinely in flight for THIS meeting — a
+    /// crash-recovery re-run surfaced via the controller, or a manual
+    /// re-transcribe. Lets `transcriptSection` tell "still working" (spinner)
+    /// apart from "failed / absent" (error + retry) so a failed transcription
+    /// never shows an endless spinner.
+    private var isActivelyTranscribing: Bool {
+        if retranscribing { return true }
+        if meetingController.processingMeetingID == meeting.id,
+           let phase = meetingController.processingPhase,
+           phase == .stitching || phase == .transcribing {
+            return true
+        }
+        return false
     }
 
     /// Synthesizes the four-step pipeline state from the active controller
@@ -1659,10 +1683,57 @@ struct MeetingDetailView: View {
                         }
                     }
                 }
+            } else if isActivelyTranscribing {
+                // Genuinely still working (crash-recovery re-run, or a manual
+                // re-transcribe that hasn't produced transcript.json yet) — a
+                // spinner is honest here.
+                operationProgressRow(name: "Transcribing", progress: retranscribeProgress)
             } else {
-                ProgressView().controlSize(.small)
+                // transcript == nil with no loadError → transcript.json is
+                // absent and nothing is running: transcription failed or was
+                // interrupted (offline cloud model, model still downloading, a
+                // crash). Show an actionable error + Retry instead of an endless
+                // spinner that's indistinguishable from a hang.
+                transcriptMissingState
             }
         }
+    }
+
+    /// Shown when `transcript.json` is absent and nothing is running. Replaces
+    /// the old bare `ProgressView` (visually identical to a hang) with an
+    /// explanation and a Retry button, so an offline/failed first meeting is
+    /// recoverable rather than a dead end.
+    private var transcriptMissingState: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(.orange)
+                    .font(.system(size: 12))
+                Text("Transcription didn't finish")
+                    .font(.system(size: 13, weight: .medium))
+            }
+            Text("There's no transcript for this meeting yet. Transcription may have failed — a cloud speech model needs a network connection, and an on-device model has to finish downloading first. The audio is saved, so you can retry.")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button {
+                runRetranscribe()
+            } label: {
+                if retranscribing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label("Retry transcription", systemImage: "arrow.clockwise")
+                }
+            }
+            .disabled(retranscribing)
+            .controlSize(.small)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.orange.opacity(0.08))
+        )
     }
 
     // MARK: - Loaders

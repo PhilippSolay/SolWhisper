@@ -45,6 +45,38 @@ enum SettingsSection: String, CaseIterable, Hashable, Identifiable {
     }
 }
 
+// MARK: - Deep links
+
+extension Notification.Name {
+    /// Routes the settings window to a section. userInfo["section"] carries
+    /// the `SettingsSection.rawValue`. Posted by `SettingsDeepLink.open`.
+    static let openSettingsSection = Notification.Name("SolWhisperOpenSettingsSection")
+}
+
+/// Programmatic entry into settings from anywhere in the app. The translate
+/// flows deep-link here when a language pack is missing, so the download
+/// happens visibly in the Languages pane instead of a surprise system sheet
+/// over the translation UI.
+@MainActor
+enum SettingsDeepLink {
+    /// Language code the Languages pane should start downloading when it next
+    /// appears. Stashed rather than sent in the notification: the pane may not
+    /// exist yet when the deep link fires (the section switch creates it), and
+    /// a notification can't reach a view that hasn't been built. Consumed
+    /// (and cleared) by the pane's `.task` / notification handler.
+    static var pendingLanguageDownload: String?
+
+    static func open(_ section: SettingsSection, downloadLanguage: String? = nil) {
+        pendingLanguageDownload = downloadLanguage
+        (NSApp.delegate as? AppDelegate)?.openSettings()
+        NotificationCenter.default.post(
+            name: .openSettingsSection,
+            object: nil,
+            userInfo: ["section": section.rawValue]
+        )
+    }
+}
+
 // MARK: - Root
 
 struct SettingsView: View {
@@ -81,6 +113,12 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .toolbar(.hidden)
+        .onReceive(NotificationCenter.default.publisher(for: .openSettingsSection)) { note in
+            if let raw = note.userInfo?["section"] as? String,
+               let section = SettingsSection(rawValue: raw) {
+                selection = section
+            }
+        }
     }
 }
 
@@ -152,7 +190,7 @@ struct TranscriptionSettingsView: View {
                     Toggle("Fix grammar",                     isOn: $fixGrammar)
                 }
             } header: { Text("AI Polish") } footer: {
-                Text("Cleans up the raw transcript via the LLM picked in Models → Routing. Less cleanup = closer to your original words.")
+                Text("Cleans up the raw transcript via the AI model picked in Models → Routing. Less cleanup = closer to your original words.")
                     .font(.caption).foregroundColor(.secondary)
             }
         }

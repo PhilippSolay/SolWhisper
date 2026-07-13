@@ -16,6 +16,20 @@ final class VoiceTranslateTests: XCTestCase {
         XCTAssertEqual(LanguageReadiness.needsDownload.hint, "needs download")
         XCTAssertEqual(LanguageReadiness.unsupported.hint, "not available")
         XCTAssertEqual(LanguageReadiness.modelDependent.hint, "depends on model")
+        XCTAssertEqual(LanguageReadiness.llmFallback.hint, "via AI model",
+                       "Apple-unsupported languages that auto-route to the LLM engine")
+    }
+
+    func testAppleTranslationErrorsAreActionable() {
+        let download = AppleTranslationError.needsDownload("German")
+        XCTAssertTrue(download.errorDescription?.contains("German") == true)
+        XCTAssertTrue(download.errorDescription?.contains("Languages") == true,
+                      "Must point at Settings → Languages where the download runs")
+
+        let unsupported = AppleTranslationError.unsupportedLanguage("Farsi")
+        XCTAssertTrue(unsupported.errorDescription?.contains("Farsi") == true)
+        XCTAssertTrue(unsupported.errorDescription?.contains("Models") == true,
+                      "Must point at configuring an AI model as the way out")
     }
 
     // MARK: - LLM provider-class availability
@@ -44,43 +58,16 @@ final class VoiceTranslateTests: XCTestCase {
                        "Frontier cloud providers cover all curated languages")
     }
 
-    // MARK: - Controller defaults + passthrough
+    // MARK: - Controller defaults
 
     @MainActor
-    func testControllerDefaultsToAppleEngineAndDefaultTarget() {
-        let engineKey = VoiceTranslateController.engineDefaultsKey
+    func testControllerDefaultsToDefaultTarget() {
         let targetKey = VoiceTranslateController.targetLanguageDefaultsKey
-        let prevEngine = UserDefaults.standard.string(forKey: engineKey)
         let prevTarget = UserDefaults.standard.string(forKey: targetKey)
-        defer { restore(engineKey, prevEngine); restore(targetKey, prevTarget) }
+        defer { restore(targetKey, prevTarget) }
 
-        UserDefaults.standard.removeObject(forKey: engineKey)
         UserDefaults.standard.removeObject(forKey: targetKey)
-
-        let controller = VoiceTranslateController()
-        XCTAssertEqual(controller.engineKind, .apple, "Apple is the v1 default engine")
-        XCTAssertEqual(controller.targetCode, TranslationLanguage.defaultTargetCode)
-    }
-
-    @MainActor
-    func testControllerHonorsStoredEngineSelection() {
-        let engineKey = VoiceTranslateController.engineDefaultsKey
-        let prevEngine = UserDefaults.standard.string(forKey: engineKey)
-        defer { restore(engineKey, prevEngine) }
-
-        UserDefaults.standard.set(TranslationEngineKind.llm.rawValue, forKey: engineKey)
-        XCTAssertEqual(VoiceTranslateController().engineKind, .llm)
-    }
-
-    @MainActor
-    func testEmptyTranscriptPassesThroughWithoutEngine() async throws {
-        // Empty / whitespace transcript must never reach an engine (no network,
-        // no pack); it returns unchanged.
-        let controller = VoiceTranslateController()
-        let empty = try await controller.translate("")
-        XCTAssertEqual(empty, "")
-        let blank = try await controller.translate("   \n  ")
-        XCTAssertEqual(blank, "   \n  ", "Whitespace-only input returns unchanged")
+        XCTAssertEqual(VoiceTranslateController().targetCode, TranslationLanguage.defaultTargetCode)
     }
 
     // MARK: - Helpers

@@ -12,6 +12,11 @@ final class MCPServer {
     private let storage = MCPStorage()
     private var initialized = false
 
+    /// Hard cap on a single JSON-RPC line. Without it a malicious or buggy
+    /// client could stream an unbounded line and exhaust memory before we ever
+    /// parse it. 1 MB is far above any legitimate request.
+    private static let maxLineBytes = 1_048_576
+
     /// Expected token, written by the app to
     /// `~/Library/Application Support/SolWhisper/mcp-token` when MCP is enabled.
     /// The MCP client must pass a matching `SOLWHISPER_MCP_TOKEN` env var, so a
@@ -37,10 +42,55 @@ final class MCPServer {
         // Don't buffer output; the parent expects messages immediately.
         setbuf(stdout, nil)
 
-        while let line = readLine(strippingNewline: true) {
-            guard !line.isEmpty else { continue }
-            handle(line)
+        let stdin = FileHandle.standardInput
+        let newline = UInt8(ascii: "\n")
+        var buffer = Data()
+        var skipping = false   // dropping an oversize line until its terminating newline
+
+        while true {
+            let chunk = stdin.availableData
+            if chunk.isEmpty { break }   // EOF
+
+            if skipping {
+                guard let nl = chunk.firstIndex(of: newline) else { continue }
+                buffer = chunk.subdata(in: chunk.index(after: nl)..<chunk.endIndex)
+                skipping = false
+            } else {
+                buffer.append(chunk)
+            }
+
+            while let nl = buffer.firstIndex(of: newline) {
+                let lineData = buffer.subdata(in: buffer.startIndex..<nl)
+                buffer = buffer.subdata(in: buffer.index(after: nl)..<buffer.endIndex)
+                processLine(lineData)
+            }
+
+            // A single line that never terminates must not grow without bound.
+            if buffer.count > Self.maxLineBytes {
+                sendError(id: nil, code: -32600,
+                          message: "Request line exceeds \(Self.maxLineBytes)-byte limit; dropped.")
+                buffer.removeAll(keepingCapacity: false)
+                skipping = true
+            }
         }
+
+        // Final line at EOF without a trailing newline (if within bounds).
+        if !buffer.isEmpty && buffer.count <= Self.maxLineBytes {
+            processLine(buffer)
+        }
+    }
+
+    /// Decodes one raw line and dispatches it. Empty / whitespace-only lines are
+    /// ignored; non-UTF8 lines get a parse error.
+    private func processLine(_ data: Data) {
+        guard !data.isEmpty else { return }
+        guard let line = String(data: data, encoding: .utf8) else {
+            sendError(id: nil, code: -32700, message: "Parse error")
+            return
+        }
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        handle(trimmed)
     }
 
     // MARK: - Dispatch

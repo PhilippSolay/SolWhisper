@@ -1,5 +1,11 @@
 -- One-click beta installer for SolWhisper.
 --
+-- ⚠️ DEV / TESTER DISTRIBUTION ONLY — NOT FOR PUBLIC RELEASE.
+-- This prompts for an admin password to strip the quarantine flag and ad-hoc
+-- re-sign, which trains users on a Gatekeeper-bypass flow a malicious DMG could
+-- reuse. The public release path is the notarized drag-to-Applications DMG from
+-- scripts/release.sh; ship that to a general audience, never this installer.
+--
 -- Lives as "Install SolWhisper.app" inside the DMG, with the real
 -- SolWhisper.app embedded at Contents/Resources/SolWhisper.app. On launch it:
 --   1. copies the app to /Applications (admin)

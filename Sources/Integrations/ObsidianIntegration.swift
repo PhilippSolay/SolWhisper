@@ -39,11 +39,15 @@ struct ObsidianIntegration {
             return f.string(from: meeting.createdAt)
         }()
         let slug = MeetingStore.normalizeSlug(meeting.title)
-        let filename = MustacheRenderer.render(template, values: [
+        let rendered = MustacheRenderer.render(template, values: [
             "date": dateStr,
             "slug": slug,
             "title": meeting.title
         ])
+        // `{{title}}` is attacker-influenceable (e.g. a calendar-invite event
+        // title). Sanitize unconditionally so no rendered template can escape
+        // the target folder via path separators or `..`.
+        let filename = Self.sanitizeFilename(rendered)
 
         let vaultURL = URL(fileURLWithPath: vaultPath, isDirectory: true)
         let folderURL = vaultURL.appendingPathComponent(folder, isDirectory: true)
@@ -67,6 +71,24 @@ struct ObsidianIntegration {
 
         try body.write(to: noteURL, atomically: true, encoding: .utf8)
         return noteURL
+    }
+
+    /// Collapses a rendered filename to a single safe path component so no
+    /// template (or attacker-controlled `{{title}}`) can write outside the
+    /// vault folder. Takes the last path component, strips separators / `..` /
+    /// NULs, drops leading dots, and falls back to a default when nothing safe
+    /// remains. Pure -- unit-tested.
+    static func sanitizeFilename(_ rendered: String) -> String {
+        let base = (rendered as NSString).lastPathComponent
+        var cleaned = base
+            .replacingOccurrences(of: "..", with: "")
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: "\\", with: "-")
+            .replacingOccurrences(of: "\0", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        while cleaned.hasPrefix(".") { cleaned.removeFirst() }
+        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? "untitled.md" : cleaned
     }
 
     private static func formatDuration(_ seconds: TimeInterval) -> String {
