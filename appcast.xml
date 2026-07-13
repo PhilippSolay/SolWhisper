@@ -3,6 +3,31 @@
   <channel>
     <title>SolWhisper Updates</title>
     <language>en</language>    <item>
+      <title>Version 0.7.2</title>
+      <pubDate>Mon, 13 Jul 2026 14:38:40 +0800</pubDate>
+      <sparkle:version>29732077</sparkle:version>
+      <sparkle:shortVersionString>0.7.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+## New
+
+**Drag-and-drop audio import.** Drop audio files anywhere on the Transcripts window — or use the new "Upload or drop file" button — to transcribe them. Drop several at once and they queue up, running one after another. Progress shows inline in the window (Transcribe → Clean → Diarize → Summarize → Send) with an end-of-run summary, and imported files now get the same full pipeline as recorded meetings, following your Settings → Meetings toggles.
+
+**Kiros task extraction.** Meetings can extract action items and send them to Kiros, alongside the existing Hermes, Obsidian, and custom-webhook integrations.
+
+## Fixed & hardened
+
+- Data-integrity fixes in the recording pipeline; crash and correctness hardening.
+- Security: Keychain handling, header auth, webhook escaping, and MCP token gating.
+- OpenRouter key resolution across accounts; settings and paste-field polish.
+- Surfaced silent first-run failures; accessibility, contrast, and copy fixes.
+      ]]></description>
+      <enclosure url="https://github.com/PhilippSolay/SolWhisper/releases/download/v0.7.2/SolWhisper-v0.7.2.dmg"
+                 sparkle:edSignature="JxH9Do8BVdoWmL+wPjjFHeZ210RJ6o6SLw7ztfRQoBm1DLJivYX+9CVtNCqdHiD+sGpL6xOd5fjC40qUVSbODg=="
+                 length="11348568"
+                 type="application/octet-stream"/>
+    </item>
+    <item>
       <title>Version 0.7.1</title>
       <pubDate>Mon, 29 Jun 2026 19:16:56 +0800</pubDate>
       <sparkle:version>29712196</sparkle:version>
