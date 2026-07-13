@@ -14,7 +14,9 @@ class AppleSpeechClient {
     /// user-facing; the owner should tear the session down and surface it.
     var onFatalError:    ((String) -> Void)?
 
-    private let recognizer  = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    /// Input language for this session — fixed at init, like the recognizer.
+    private let language: DictationLanguage
+    private let recognizer: SFSpeechRecognizer?
     private var task:        SFSpeechRecognitionTask?
     private var request:     SFSpeechAudioBufferRecognitionRequest?
     private let engine       = AVAudioEngine()
@@ -64,6 +66,11 @@ class AppleSpeechClient {
     private var fftAccum  = [Float](repeating: 0, count: AudioEngine.fftBinCount)
     private var nativeSampleRate: Double = 48000
 
+    init(language: DictationLanguage = .fallback) {
+        self.language = language
+        self.recognizer = SFSpeechRecognizer(locale: language.appleLocale)
+    }
+
     // MARK: - Authorization
 
     static var authorizationStatus: SFSpeechRecognizerAuthorizationStatus {
@@ -81,6 +88,15 @@ class AppleSpeechClient {
     func start() throws {
         guard let recognizer, recognizer.isAvailable else {
             throw AppleSpeechError.unavailable
+        }
+
+        // Non-English requires the on-device pack. Apple's server path is not
+        // an acceptable fallback here — it caps requests at ~1 minute and
+        // breaks the "audio never leaves this Mac" promise — so refuse with
+        // an actionable error instead. English keeps the legacy server
+        // ladder (retry/rescue below) for continuity.
+        if !language.isEnglish && !recognizer.supportsOnDeviceRecognition {
+            throw AppleSpeechError.languagePackMissing(language)
         }
 
         watch = Stopwatch()
@@ -105,7 +121,7 @@ class AppleSpeechClient {
 
         let mode = usedOnDevice ? "on-device" : "server"
         Task { @MainActor in
-            DebugLog.shared.log(icon: "🍎", label: "Apple Speech starting", value: "\(mode) · en-US")
+            DebugLog.shared.log(icon: "🍎", label: "Apple Speech starting", value: "\(mode) · \(self.language.id)")
         }
 
         // Prefer on-device recognition when the model supports it so audio never
@@ -310,7 +326,10 @@ class AppleSpeechClient {
             return
         }
 
-        if usedOnDevice, !didServerRetry {
+        // Server retry is English-only: replaying a Spanish session into
+        // Apple's servers would ship the audio off-device and hit the ~1 min
+        // server cap. Non-English falls through to the WhisperKit rescue.
+        if usedOnDevice, !didServerRetry, language.isEnglish {
             didServerRetry = true
             retryViaServer()
             return
@@ -375,6 +394,7 @@ class AppleSpeechClient {
     private func enterWhisperRescue() -> Bool {
         guard Self.rescueModel(
             preferred: UserDefaults.standard.string(forKey: "whisperKitModel"),
+            english: language.isEnglish,
             isDownloaded: { WhisperKitClient.isModelDownloaded($0) }
         ) != nil else { return false }
 
@@ -399,6 +419,7 @@ class AppleSpeechClient {
         stashLock.unlock()
         return hasAudio && Self.rescueModel(
             preferred: UserDefaults.standard.string(forKey: "whisperKitModel"),
+            english: language.isEnglish,
             isDownloaded: { WhisperKitClient.isModelDownloaded($0) }
         ) != nil
     }
@@ -417,6 +438,7 @@ class AppleSpeechClient {
 
         let model = Self.rescueModel(
             preferred: UserDefaults.standard.string(forKey: "whisperKitModel"),
+            english: language.isEnglish,
             isDownloaded: { WhisperKitClient.isModelDownloaded($0) }
         )
         let elapsed = watch?.elapsed
@@ -467,7 +489,8 @@ class AppleSpeechClient {
                 DebugLog.shared.log(icon: "🍎", label: "WhisperKit rescue transcribing",
                                     value: model)
                 let segments = try await WhisperKitClient.fileTranscribe(
-                    audioPath: url, model: model, progress: nil
+                    audioPath: url, model: model,
+                    language: self.language.whisperCode, progress: nil
                 )
                 let text = segments.map { $0.text }.joined(separator: " ")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -486,11 +509,18 @@ class AppleSpeechClient {
     /// Rescue model choice: the dictation WhisperKit selection when it's on
     /// disk, else the default model, else any downloaded model (smallest
     /// first — supportedModels is ordered by size), else none.
+    /// Non-English sessions skip ".en" checkpoints — those decode models can
+    /// only ever emit English, so rescuing Spanish through one produces
+    /// garbage rather than a transcript.
     static func rescueModel(preferred: String?,
+                            english: Bool = true,
                             isDownloaded: (String) -> Bool) -> String? {
-        if let preferred, isDownloaded(preferred) { return preferred }
-        if isDownloaded(WhisperKitClient.defaultModel) { return WhisperKitClient.defaultModel }
-        return WhisperKitClient.supportedModels.first(where: isDownloaded)
+        let usable: (String) -> Bool = { english || !$0.hasSuffix(".en") }
+        if let preferred, usable(preferred), isDownloaded(preferred) { return preferred }
+        if usable(WhisperKitClient.defaultModel), isDownloaded(WhisperKitClient.defaultModel) {
+            return WhisperKitClient.defaultModel
+        }
+        return WhisperKitClient.supportedModels.first { usable($0) && isDownloaded($0) }
     }
 
     /// Writes PCM buffers sequentially to a CAF file in their native format.
@@ -663,4 +693,7 @@ class AppleSpeechClient {
 
 enum AppleSpeechError: Error {
     case unavailable
+    /// The selected input language has no on-device dictation pack, and the
+    /// server path is off-limits for non-English (privacy + ~1 min cap).
+    case languagePackMissing(DictationLanguage)
 }

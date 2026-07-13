@@ -57,6 +57,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var meetingMenuItem: NSMenuItem?
     private var audioMenuItem: NSMenuItem?
     private var audioSubmenuRef: NSMenu?
+    private var dictationLanguageMenuItem: NSMenuItem?
+    private var dictationLanguageSubmenuRef: NSMenu?
     private var meetingPillController: OverlayWindowController?
     private var meetingStateCancellable: AnyCancellable?
     private var meetingStatusObserver: NSObjectProtocol?
@@ -109,6 +111,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             "openRouterModel":    "anthropic/claude-3-5-haiku",
             "whisperKitModel":    WhisperKitClient.defaultModel,
             "meetingsWhisperKitModel": WhisperKitClient.defaultModel,
+            // Dictation input language (tray Input Language menu). Full
+            // BCP-47 locale ID from DictationLanguage.curated. Read via
+            // UserDefaults in AppDelegate menu building, so it MUST be
+            // registered here (same rule as the pipeline toggles below).
+            "dictationLanguage":  DictationLanguage.fallback.id,
             "customVocabulary":   "[]",
             "polishRemoveFiller":   true,
             "polishFixPunctuation": true,
@@ -547,6 +554,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         audioSubmenuRef = audioSubmenu
         rebuildAudioSubmenu()
         menu.addItem(audioParent)
+
+        let langParent = NSMenuItem(title: "Input Language", action: nil, keyEquivalent: "")
+        langParent.image = trayIcon("globe")
+        let langSubmenu = NSMenu()
+        langParent.submenu = langSubmenu
+        dictationLanguageMenuItem = langParent
+        dictationLanguageSubmenuRef = langSubmenu
+        rebuildDictationLanguageSubmenu()
+        menu.addItem(langParent)
 
         let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settings.image = trayIcon("gearshape")
@@ -1002,6 +1018,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         rebuildAudioSubmenu()
+        rebuildDictationLanguageSubmenu()
 
         let isRec = transcriptionController.isRecording
         toggleMenuItem?.title = isRec ? "Stop Recording" : "Start Recording"
@@ -1089,6 +1106,45 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let raw = sender.representedObject as? String ?? ""
         PreferredInputDevice.set(uid: raw.isEmpty ? nil : raw)
         rebuildAudioSubmenu()
+    }
+
+    /// Rebuilds the tray Input Language submenu — ready languages for the
+    /// active dictation backend, checkmark on the selection, then an
+    /// "Add Language…" deep link into Settings → Languages. Same lifecycle
+    /// as the Audio submenu: rebuilt on every menu open, no observers.
+    private func rebuildDictationLanguageSubmenu() {
+        guard let submenu = dictationLanguageSubmenuRef else { return }
+        submenu.removeAllItems()
+
+        let backend = UserDefaults.standard.string(forKey: "transcriptionBackend") ?? "apple"
+        let entries = DictationLanguageMenuModel.entries(
+            backend: backend, selectedID: DictationLanguage.selected.id)
+        for entry in entries {
+            let item = NSMenuItem(title: entry.title,
+                                  action: #selector(selectDictationLanguage(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = entry.id
+            item.state = entry.isSelected ? .on : .off
+            submenu.addItem(item)
+        }
+
+        submenu.addItem(NSMenuItem.separator())
+        let add = NSMenuItem(title: "Add Language…",
+                             action: #selector(openLanguagesSettings),
+                             keyEquivalent: "")
+        add.target = self
+        submenu.addItem(add)
+    }
+
+    @objc private func selectDictationLanguage(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        UserDefaults.standard.set(id, forKey: DictationLanguage.defaultsKey)
+        rebuildDictationLanguageSubmenu()
+    }
+
+    @objc private func openLanguagesSettings() {
+        SettingsDeepLink.open(.languages)
     }
 
     // MARK: - Recording state UI helpers

@@ -11,6 +11,8 @@ class DeepgramClient: NSObject {
     var onTranscript: ((String, Bool) -> Void)?
 
     private let apiKey: String
+    /// Deepgram `language` query value ("en-US", "es", "fr-CA"…).
+    private let language: String
     private var webSocket: URLSessionWebSocketTask?
     private var session: URLSession?
     private var closeCompletion: ((String?) -> Void)?
@@ -20,9 +22,27 @@ class DeepgramClient: NSObject {
     private var firstTranscriptLogged = false
     private var bytesSent = 0
 
-    init(apiKey: String) {
+    init(apiKey: String, language: String = "en-US") {
         self.apiKey = apiKey
+        self.language = language
         super.init()
+    }
+
+    /// Streaming endpoint for a dictation session. Static + pure so tests can
+    /// assert the query without opening a socket.
+    static func streamURL(language: String) -> URL {
+        var components = URLComponents(string: "wss://api.deepgram.com/v1/listen")!
+        components.queryItems = [
+            URLQueryItem(name: "model",           value: "nova-3"),
+            URLQueryItem(name: "language",        value: language),
+            URLQueryItem(name: "encoding",        value: "linear16"),
+            URLQueryItem(name: "sample_rate",     value: "16000"),
+            URLQueryItem(name: "channels",        value: "1"),
+            URLQueryItem(name: "interim_results", value: "true"),
+            URLQueryItem(name: "smart_format",    value: "true"),
+            URLQueryItem(name: "endpointing",     value: "300"),
+        ]
+        return components.url!
     }
 
     // MARK: - Connect
@@ -33,19 +53,7 @@ class DeepgramClient: NSObject {
             return
         }
 
-        var components = URLComponents(string: "wss://api.deepgram.com/v1/listen")!
-        components.queryItems = [
-            URLQueryItem(name: "model",           value: "nova-3"),
-            URLQueryItem(name: "language",        value: "en-US"),
-            URLQueryItem(name: "encoding",        value: "linear16"),
-            URLQueryItem(name: "sample_rate",     value: "16000"),
-            URLQueryItem(name: "channels",        value: "1"),
-            URLQueryItem(name: "interim_results", value: "true"),
-            URLQueryItem(name: "smart_format",    value: "true"),
-            URLQueryItem(name: "endpointing",     value: "300"),
-        ]
-
-        var request = URLRequest(url: components.url!)
+        var request = URLRequest(url: Self.streamURL(language: language))
         request.setValue("Token \(apiKey)", forHTTPHeaderField: "Authorization")
 
         session   = URLSession(configuration: .default)
@@ -56,7 +64,7 @@ class DeepgramClient: NSObject {
         bytesSent = 0
         firstTranscriptLogged = false
         Task { @MainActor in
-            DebugLog.shared.log(icon: "🎙", label: "Deepgram connecting", value: "nova-3 · 16kHz")
+            DebugLog.shared.log(icon: "🎙", label: "Deepgram connecting", value: "nova-3 · \(self.language) · 16kHz")
         }
         receiveLoop()
     }

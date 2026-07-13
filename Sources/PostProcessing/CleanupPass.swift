@@ -108,7 +108,9 @@ struct CleanupPass {
         }
 
         var rules: [String] = []
-        if removeFiller { rules.append("- Remove filler words (um, uh, like, you know, basically, I mean, right, well).") }
+        // Meetings can be in any language (WhisperKit multilingual models),
+        // so the filler examples span languages instead of assuming English.
+        if removeFiller { rules.append("- Remove filler words and hesitation sounds in the transcript's language (English: um, uh, like, you know, basically, I mean, right, well; Spanish: eh, este, o sea; French: euh, ben).") }
         if fixPunct { rules.append("- Fix punctuation and capitalization.") }
         if fixGrammar { rules.append("- Fix obvious grammar errors but keep the speaker's voice.") }
         // WhisperKit / other STT engines emit non-speech artifact tokens
