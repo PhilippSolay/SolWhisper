@@ -38,13 +38,24 @@ class AppleSpeechClient {
     private var sawResult      = false
     private var isTearingDown  = false
 
-    // Early-audio stash for the retry replay. Written from the audio tap
-    // thread, drained on main — guarded by `stashLock`. Capped so a session
-    // that never errors doesn't accumulate forever (cleared on first result).
+    // WhisperKit rescue: with Siri AND Dictation disabled, macOS refuses ALL
+    // SFSpeechRecognizer work — a "server" retry task connects to no daemon,
+    // never errors, and never produces results (verified via unified log:
+    // kLSRErrorDomain 201 refusal, then silence). When that state is detected
+    // we keep capturing into the stash and transcribe locally on stop.
+    private var whisperRescue = false
+
+    // Early-audio stash for the retry replay and the WhisperKit rescue.
+    // Written from the audio tap thread, drained on main — guarded by
+    // `stashLock`. Time-capped so a session that never errors doesn't
+    // accumulate forever (cleared on first result).
     private let stashLock = NSLock()
     private var stashedBuffers: [AVAudioPCMBuffer] = []
+    private var stashedFrames: AVAudioFramePosition = 0
     private var isStashing = true
-    private static let maxStashedBuffers = 512   // ~12 s of 1024-frame taps
+    /// Rescue transcribes at most this much audio — dictations are short;
+    /// 90 s of 44.1 kHz mono Float32 is ~16 MB of stash.
+    private static let maxStashSeconds: Double = 90
 
     // FFT state
     private let fftSize = 1024
@@ -79,8 +90,10 @@ class AppleSpeechClient {
         didServerRetry = false
         sawResult      = false
         isTearingDown  = false
+        whisperRescue  = false
         stashLock.lock()
         stashedBuffers = []
+        stashedFrames  = 0
         isStashing     = true
         stashLock.unlock()
 
@@ -154,6 +167,17 @@ class AppleSpeechClient {
     // MARK: - Stop
 
     func stopAndFinalize(completion: @escaping (String?) -> Void) {
+        // Rescue mode: the recognizer is dead by system policy — skip
+        // endAudio/watchdog entirely and transcribe the stash locally.
+        if whisperRescue {
+            Task { @MainActor in
+                DebugLog.shared.log(icon: "🍎", label: "Apple Speech stop",
+                                    value: "WhisperKit rescue")
+            }
+            finishViaWhisperRescue(completion: completion)
+            return
+        }
+
         finalCB = completion
         request?.endAudio()
 
@@ -170,6 +194,19 @@ class AppleSpeechClient {
             guard let self, let cb = self.finalCB else { return }
             self.finalCB = nil
             let t = self.latestText
+            // Last-chance rescue: recognition went silent (no partials, no
+            // error — e.g. a zombie server task) but the stash still holds
+            // the session's audio. Hand it to WhisperKit instead of
+            // returning empty.
+            if t.isEmpty, self.canRescue() {
+                Task { @MainActor in
+                    DebugLog.shared.log(icon: "🍎",
+                                        label: "Apple Speech silent — WhisperKit rescue",
+                                        ok: false)
+                }
+                self.finishViaWhisperRescue(completion: cb)
+                return
+            }
             Task { @MainActor in
                 DebugLog.shared.log(icon: "🍎", label: "Apple Speech fallback",
                                     value: t.isEmpty ? "empty" : "\"\(t)\"", ok: !t.isEmpty)
@@ -212,6 +249,9 @@ class AppleSpeechClient {
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            // Rescue mode: the recognizer was cancelled by system policy — a
+            // late/spurious result must not clear the stash the rescue needs.
+            guard !self.whisperRescue else { return }
 
             if !self.sawResult {
                 // Recognition is alive — the retry stash is no longer needed.
@@ -219,6 +259,7 @@ class AppleSpeechClient {
                 self.stashLock.lock()
                 self.isStashing = false
                 self.stashedBuffers = []
+                self.stashedFrames = 0
                 self.stashLock.unlock()
             }
 
@@ -250,13 +291,24 @@ class AppleSpeechClient {
         }
     }
 
-    /// Recognizer died before producing any text. First option: if we forced
-    /// on-device, retry once via Apple's servers (replaying the stashed audio).
-    /// Out of retries + an availability error (Siri/Dictation disabled, asset
-    /// missing): surface an actionable message so the pill doesn't sit
-    /// "listening" against a dead recognizer. Runs on main.
+    /// Recognizer died before producing any text. Recovery ladder:
+    ///   1. "Siri and Dictation are disabled" (1700/1701) → WhisperKit rescue.
+    ///      macOS refuses ALL SFSpeechRecognizer work in that state — a
+    ///      server-mode retry task connects to no daemon and never errors, so
+    ///      retrying would dictate into a black hole (verified via unified
+    ///      log against localspeechrecognition's kLSRErrorDomain 201).
+    ///   2. Forced on-device died some other way → retry once via Apple's
+    ///      servers, replaying the stashed audio.
+    ///   3. Out of retries + an availability error → WhisperKit rescue, or an
+    ///      actionable message when no local model is downloaded, so the pill
+    ///      doesn't sit "listening" against a dead recognizer. Runs on main.
     private func recoverFromEarlyFailure(_ error: NSError) {
-        guard !isTearingDown, !sawResult, finalCB == nil else { return }
+        guard !isTearingDown, !sawResult, finalCB == nil, !whisperRescue else { return }
+
+        if Self.isDictationDisabledError(error) {
+            if !enterWhisperRescue() { failUnavailable() }
+            return
+        }
 
         if usedOnDevice, !didServerRetry {
             didServerRetry = true
@@ -265,8 +317,13 @@ class AppleSpeechClient {
         }
 
         guard Self.isAvailabilityError(error) else { return }
+        if enterWhisperRescue() { return }
+        failUnavailable()
+    }
+
+    private func failUnavailable() {
         tearDown()
-        onFatalError?("Apple speech recognition is unavailable. Turn on Dictation in System Settings → Keyboard, or switch engines in SolWhisper Settings → Dictation.")
+        onFatalError?("Apple speech recognition is unavailable. Turn on Dictation in System Settings → Keyboard, switch engines in SolWhisper Settings → Dictation, or download a WhisperKit model in Settings → Models for offline dictation.")
     }
 
     /// Swaps the failed on-device request for a server-based one on the same
@@ -293,6 +350,7 @@ class AppleSpeechClient {
         stashLock.lock()
         stashedBuffers.forEach { req.append($0) }
         stashedBuffers = []
+        stashedFrames = 0
         request = req
         stashLock.unlock()
 
@@ -309,15 +367,165 @@ class AppleSpeechClient {
         return req
     }
 
-    /// Copies tap buffers while a retry might still need them — the engine
-    /// reuses the tap's buffer, so a reference alone would be overwritten.
-    /// Called from the audio thread.
+    // MARK: - WhisperKit rescue
+
+    /// Arms rescue mode: the recognizer is dead by system policy, so stop
+    /// feeding it, keep capturing into the stash, and transcribe locally on
+    /// stop. Returns false when no WhisperKit model is on disk. Runs on main.
+    private func enterWhisperRescue() -> Bool {
+        guard Self.rescueModel(
+            preferred: UserDefaults.standard.string(forKey: "whisperKitModel"),
+            isDownloaded: { WhisperKitClient.isModelDownloaded($0) }
+        ) != nil else { return false }
+
+        whisperRescue = true
+        task?.cancel()
+        task = nil
+        stashLock.lock()
+        request = nil          // tap keeps stashing; nothing left to feed
+        stashLock.unlock()
+        Task { @MainActor in
+            DebugLog.shared.log(icon: "🍎",
+                                label: "Apple dictation disabled — WhisperKit rescue armed",
+                                ok: false)
+        }
+        onTranscript?("(Apple dictation off — transcribing on stop…)", false)
+        return true
+    }
+
+    private func canRescue() -> Bool {
+        stashLock.lock()
+        let hasAudio = !stashedBuffers.isEmpty
+        stashLock.unlock()
+        return hasAudio && Self.rescueModel(
+            preferred: UserDefaults.standard.string(forKey: "whisperKitModel"),
+            isDownloaded: { WhisperKitClient.isModelDownloaded($0) }
+        ) != nil
+    }
+
+    /// Writes the stashed session audio to a temp file, transcribes it with
+    /// the local WhisperKit model, and completes with the text. Tears the
+    /// engine down first so the mic indicator clears the moment the user
+    /// stops. Runs on main.
+    private func finishViaWhisperRescue(completion: @escaping (String?) -> Void) {
+        // Snapshot the audio before tearDown wipes the stash.
+        stashLock.lock()
+        let buffers = stashedBuffers
+        stashedBuffers = []
+        isStashing = false
+        stashLock.unlock()
+
+        let model = Self.rescueModel(
+            preferred: UserDefaults.standard.string(forKey: "whisperKitModel"),
+            isDownloaded: { WhisperKitClient.isModelDownloaded($0) }
+        )
+        let elapsed = watch?.elapsed
+        tearDown()
+
+        guard let model, !buffers.isEmpty else {
+            Task { @MainActor in
+                DebugLog.shared.log(icon: "🍎", label: "WhisperKit rescue unavailable",
+                                    value: buffers.isEmpty ? "no audio captured" : "no model downloaded",
+                                    ok: false)
+            }
+            completion(nil)
+            return
+        }
+
+        onTranscript?("(transcribing offline via \(WhisperKitClient.displayName(for: model))…)", false)
+
+        // First-finish-wins between the transcription and a safety timeout —
+        // a hung model load must not leave the pill waiting forever.
+        let lock = NSLock()
+        var didFinish = false
+        var safety: DispatchWorkItem?
+        let finish: (String?) -> Void = { text in
+            lock.lock()
+            let first = !didFinish
+            didFinish = true
+            lock.unlock()
+            guard first else { return }
+            safety?.cancel()
+            completion(text)
+        }
+
+        let safetyWork = DispatchWorkItem {
+            Task { @MainActor in
+                DebugLog.shared.log(icon: "⏱", label: "WhisperKit rescue timeout",
+                                    value: "no result after 60s — bailing", ok: false)
+            }
+            finish(nil)
+        }
+        safety = safetyWork
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60, execute: safetyWork)
+
+        Task { @MainActor in
+            do {
+                let url = Self.makeRescueURL()
+                try Self.writeBuffers(buffers, to: url)
+                defer { try? FileManager.default.removeItem(at: url) }
+                DebugLog.shared.log(icon: "🍎", label: "WhisperKit rescue transcribing",
+                                    value: model)
+                let segments = try await WhisperKitClient.fileTranscribe(
+                    audioPath: url, model: model, progress: nil
+                )
+                let text = segments.map { $0.text }.joined(separator: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                DebugLog.shared.log(icon: "🍎", label: "WhisperKit rescue done",
+                                    value: text.isEmpty ? "(empty)" : "\"\(String(text.prefix(80)))\"",
+                                    ms: elapsed)
+                finish(text.isEmpty ? nil : text)
+            } catch {
+                DebugLog.shared.log(icon: "🍎", label: "WhisperKit rescue failed",
+                                    value: "\(error)", ok: false)
+                finish(nil)
+            }
+        }
+    }
+
+    /// Rescue model choice: the dictation WhisperKit selection when it's on
+    /// disk, else the default model, else any downloaded model (smallest
+    /// first — supportedModels is ordered by size), else none.
+    static func rescueModel(preferred: String?,
+                            isDownloaded: (String) -> Bool) -> String? {
+        if let preferred, isDownloaded(preferred) { return preferred }
+        if isDownloaded(WhisperKitClient.defaultModel) { return WhisperKitClient.defaultModel }
+        return WhisperKitClient.supportedModels.first(where: isDownloaded)
+    }
+
+    /// Writes PCM buffers sequentially to a CAF file in their native format.
+    static func writeBuffers(_ buffers: [AVAudioPCMBuffer], to url: URL) throws {
+        guard let first = buffers.first else {
+            throw AppleSpeechError.unavailable
+        }
+        let format = first.format
+        let file = try AVAudioFile(forWriting: url,
+                                   settings: format.settings,
+                                   commonFormat: format.commonFormat,
+                                   interleaved: format.isInterleaved)
+        for buf in buffers {
+            try file.write(from: buf)
+        }
+    }
+
+    private static func makeRescueURL() -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("solwhisper-recordings", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("apple-rescue-\(UUID().uuidString).caf")
+    }
+
+    /// Copies tap buffers while a retry or rescue might still need them — the
+    /// engine reuses the tap's buffer, so a reference alone would be
+    /// overwritten. Called from the audio thread.
     private func stashForReplay(_ buf: AVAudioPCMBuffer) {
         stashLock.lock()
         defer { stashLock.unlock() }
-        guard isStashing, stashedBuffers.count < Self.maxStashedBuffers,
+        let maxFrames = AVAudioFramePosition(Self.maxStashSeconds * buf.format.sampleRate)
+        guard isStashing, stashedFrames < maxFrames,
               let copy = Self.copyBuffer(buf) else { return }
         stashedBuffers.append(copy)
+        stashedFrames += AVAudioFramePosition(copy.frameLength)
     }
 
     private static func copyBuffer(_ buf: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
@@ -342,6 +550,16 @@ class AppleSpeechClient {
             && [1100, 1101, 1700, 1701].contains(error.code)
     }
 
+    /// The subset of availability errors where macOS refuses ALL
+    /// SFSpeechRecognizer work, on-device AND server: with Siri + Dictation
+    /// both off, even a server-mode task connects to no daemon and just goes
+    /// silent. A retry can't help — only the WhisperKit rescue can.
+    /// 1100/1101 (asset missing) are excluded: the server path works there.
+    static func isDictationDisabledError(_ error: NSError) -> Bool {
+        error.domain == "kAFAssistantErrorDomain"
+            && [1700, 1701].contains(error.code)
+    }
+
     private func tearDown() {
         isTearingDown = true
         // `request` cleared under the lock too: an in-flight tap callback can
@@ -349,6 +567,7 @@ class AppleSpeechClient {
         stashLock.lock()
         isStashing = false
         stashedBuffers = []
+        stashedFrames = 0
         request = nil
         stashLock.unlock()
         engine.inputNode.removeTap(onBus: 0)
