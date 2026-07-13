@@ -67,10 +67,16 @@ final class AppleTranslationEngine: TranslationEngine {
         case .installed:
             break
         case .supported:
+            // `.supported` = a pack is missing, but NOT necessarily the target's.
+            // Translating an uninstalled non-English source INTO installed English
+            // reports `.supported` because the SOURCE pack is absent — queue that,
+            // not the target (which would deep-link a useless en→en download).
+            let missing = await ApplePackProbe.codeToDownload(source: sourceCode, target: targetCode)
+            let missingLabel = TranslationLanguage.named(missing).label
             DebugLog.shared.log(icon: "🌍", label: "Language pack missing — opening Settings → Languages",
-                                value: targetCode, ok: false)
-            SettingsDeepLink.open(.languages, downloadLanguage: targetCode)
-            throw AppleTranslationError.needsDownload(label)
+                                value: missing, ok: false)
+            SettingsDeepLink.open(.languages, downloadLanguage: missing)
+            throw AppleTranslationError.needsDownload(missingLabel)
         case .unsupported:
             if LLMResolver.resolve(.translation) != nil {
                 DebugLog.shared.log(icon: "🌍", label: "Apple can't translate this language — using AI model",

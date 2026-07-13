@@ -388,6 +388,68 @@ enum TranslationEngineKind: String, Sendable, CaseIterable {
     }
 }
 
+// MARK: - Actual engine + badge (BUG 1: privacy)
+
+/// Which backend ACTUALLY produced a translation. Distinct from the user's
+/// chosen `TranslationEngineKind`: when the user picks Apple but the language
+/// isn't available on-device, the Apple path silently routes to the configured
+/// cloud AI model. The footer badge is driven by THIS, never the setting, so
+/// text that egressed to a provider is never mislabeled "On-device".
+enum TranslationEngineUsed: Equatable, Sendable {
+    /// Apple's on-device Translation framework. No network egress.
+    case onDevice
+    /// A cloud / AI-model translation. `provider` is a display name ("OpenAI")
+    /// when known, else nil.
+    case aiModel(provider: String?)
+
+    /// Build from an `LLMResolver` provider label ("openai" → "OpenAI").
+    static func fromProviderLabel(_ raw: String) -> TranslationEngineUsed {
+        .aiModel(provider: ModelProvider(rawValue: raw)?.label ?? raw)
+    }
+
+    /// The engine we *expect* before any result lands: the user's choice.
+    static func expected(for kind: TranslationEngineKind) -> TranslationEngineUsed {
+        switch kind {
+        case .apple: return .onDevice
+        case .llm:   return .aiModel(provider: nil)
+        }
+    }
+}
+
+/// Footer badge copy derived from (chosen engine, engine actually used).
+struct TranslationBadge: Equatable {
+    /// Trailing badge, e.g. "On-device", "Sent to OpenAI", "AI model".
+    let label: String
+    /// One-line disclosure shown when an on-device request had to egress to a
+    /// cloud model. `nil` when there's nothing to disclose.
+    let note: String?
+}
+
+/// Pure mapping (chosen engine, actual engine) → badge. Free of SwiftUI / Apple
+/// frameworks so it's unit-testable.
+enum TranslationBadgePresenter {
+    static func badge(userEngine: TranslationEngineKind,
+                      used: TranslationEngineUsed) -> TranslationBadge {
+        switch used {
+        case .onDevice:
+            return TranslationBadge(label: "On-device", note: nil)
+        case .aiModel(let provider):
+            switch userEngine {
+            case .apple:
+                // The user asked for on-device but the language forced a cloud
+                // fallback — say where the text went, and why.
+                let label = provider.map { "Sent to \($0)" } ?? "Sent to AI model"
+                return TranslationBadge(
+                    label: label,
+                    note: "Not available on-device — translated by your AI model")
+            case .llm:
+                // The user deliberately chose the AI-model engine.
+                return TranslationBadge(label: "AI model", note: nil)
+            }
+        }
+    }
+}
+
 // MARK: - SwiftUI view
 
 /// Translation status drives the bottom block — spinner, translated text,
@@ -414,6 +476,10 @@ private struct TranslateBubbleView: View {
     @State private var sourceLanguageCode: String?
     @State private var targetLanguageCode: String
     @State private var status: TranslateStatus = .idle
+    /// The engine that ACTUALLY produced the current result. Drives the footer
+    /// badge — NOT `engineKind` (the user's setting), which lies when the Apple
+    /// path silently falls back to a cloud AI model for an unsupported language.
+    @State private var engineUsed: TranslationEngineUsed
     /// Bumped whenever the user changes target language so the Apple
     /// `.translationTask` modifier re-fires with a fresh configuration.
     @State private var configurationToken: Int = 0
@@ -446,6 +512,7 @@ private struct TranslateBubbleView: View {
         self.onTargetChange = onTargetChange
         _sourceLanguageCode = State(initialValue: initialDetectedCode)
         _targetLanguageCode = State(initialValue: initialTargetCode)
+        _engineUsed = State(initialValue: .expected(for: engineKind))
     }
 
     var body: some View {
@@ -673,17 +740,27 @@ private struct TranslateBubbleView: View {
     }
 
     private var footer: some View {
-        HStack {
-            Image(systemName: "doc.on.clipboard")
-                .foregroundColor(.white.opacity(0.4))
-                .font(.system(size: 10))
-            Text("Translated · click to paste, ⌘V to use elsewhere")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(.white.opacity(0.5))
-            Spacer()
-            Text(engineKind == .apple ? "On-device" : "LLM")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(.white.opacity(0.35))
+        let badge = TranslationBadgePresenter.badge(userEngine: engineKind, used: engineUsed)
+        return VStack(alignment: .leading, spacing: 4) {
+            if let note = badge.note {
+                Label(note, systemImage: "sparkles")
+                    .labelStyle(.titleAndIcon)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.white.opacity(0.5))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack {
+                Image(systemName: "doc.on.clipboard")
+                    .foregroundColor(.white.opacity(0.4))
+                    .font(.system(size: 10))
+                Text("Translated · click to paste, ⌘V to use elsewhere")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white.opacity(0.5))
+                Spacer()
+                Text(badge.label)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.white.opacity(0.35))
+            }
         }
     }
 
@@ -747,7 +824,7 @@ private struct TranslateBubbleView: View {
                                         value: "token=\(kickoffToken) current=\(configurationToken)")
                     return
                 }
-                handleEngineResult(out.translated)
+                handleEngineResult(out.translated, used: .fromProviderLabel(out.providerLabel))
                 DebugLog.shared.log(icon: "🌐", label: "Translate (LLM)",
                                     value: "\(out.providerLabel) \(out.modelID) · \(out.translated.count) chars\(out.truncated ? " · truncated" : "")")
             } catch {
@@ -761,8 +838,9 @@ private struct TranslateBubbleView: View {
 
     // MARK: - Engine callbacks
 
-    private func handleEngineResult(_ translated: String) {
+    private func handleEngineResult(_ translated: String, used: TranslationEngineUsed) {
         let normalized = Self.normalizeOutput(translated)
+        engineUsed = used
         status = .done(normalized)
         onCopyTranslated(normalized)
     }
@@ -804,7 +882,7 @@ private struct AppleTranslationModifier: ViewModifier {
     let sourceCode: String?
     let targetCode: String
     let token: Int
-    let onResult: (String) -> Void
+    let onResult: (String, TranslationEngineUsed) -> Void
     let onError: (String) -> Void
 
     func body(content: Content) -> some View {
@@ -830,7 +908,7 @@ private struct AppleTranslationModifierBody: ViewModifier {
     let sourceCode: String?
     let targetCode: String
     let token: Int
-    let onResult: (String) -> Void
+    let onResult: (String, TranslationEngineUsed) -> Void
     let onError: (String) -> Void
 
     @State private var configuration: TranslationSession.Configuration?
@@ -874,9 +952,15 @@ private struct AppleTranslationModifierBody: ViewModifier {
                 identifier: sourceCode ?? Locale.current.language.languageCode?.identifier ?? "en")
             switch await LanguageAvailability().status(from: source, to: target) {
             case .supported:
+                // `.supported` = a pack is missing, but NOT necessarily the
+                // target's. A missing non-English SOURCE reports `.supported`
+                // too; queue whichever side is actually absent, else the deep
+                // link would try to download already-installed English.
+                let missing = await ApplePackProbe.codeToDownload(source: sourceCode, target: targetCode)
+                let missingLabel = TranslationLanguage.named(missing).label
                 await MainActor.run {
-                    SettingsDeepLink.open(.languages, downloadLanguage: targetCode)
-                    onError(AppleTranslationError.needsDownload(label).localizedDescription)
+                    SettingsDeepLink.open(.languages, downloadLanguage: missing)
+                    onError(AppleTranslationError.needsDownload(missingLabel).localizedDescription)
                 }
                 return
             case .unsupported:
@@ -884,7 +968,11 @@ private struct AppleTranslationModifierBody: ViewModifier {
                 if hasLLM {
                     let output = try await LLMTranslationEngine().translate(
                         text: sourceText, sourceCode: sourceCode, targetCode: targetCode)
-                    await MainActor.run { onResult(output.translated) }
+                    // Cloud egress on the Apple path — tag the actual engine so
+                    // the badge reads "Sent to <provider>", never "On-device".
+                    await MainActor.run {
+                        onResult(output.translated, .fromProviderLabel(output.providerLabel))
+                    }
                 } else {
                     await MainActor.run {
                         onError(AppleTranslationError.unsupportedLanguage(label).localizedDescription)
@@ -900,7 +988,7 @@ private struct AppleTranslationModifierBody: ViewModifier {
             try await session.prepareTranslation()
             let response = try await session.translate(sourceText)
             await MainActor.run {
-                onResult(response.targetText)
+                onResult(response.targetText, .onDevice)
             }
         } catch {
             // Apple's `TranslationError` cases are opaque on macOS 14.4 —
@@ -918,7 +1006,7 @@ private struct AppleTranslationModifierBody: ViewModifier {
     let sourceCode: String?
     let targetCode: String
     let token: Int
-    let onResult: (String) -> Void
+    let onResult: (String, TranslationEngineUsed) -> Void
     let onError: (String) -> Void
 
     func body(content: Content) -> some View { content }
