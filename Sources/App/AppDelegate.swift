@@ -243,11 +243,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Best-effort clean teardown on quit. If a dictation is mid-flight, tear
-        // it down so the audio engine/temp file is flushed and closed rather
-        // than left half-written. Meetings are chunk-written continuously and
-        // recovered on next launch (see CrashRecovery), so they need no action.
+        // Best-effort clean teardown on quit. If a dictation is mid-flight,
+        // salvage whatever's been transcribed into history BEFORE tearing down
+        // — otherwise ⌘Q before Stop silently discards it (not pasted, not
+        // saved). We save to history rather than paste: the window server is
+        // already tearing down and pasting into a target app mid-quit is racy.
+        // Meetings are chunk-written continuously and recovered on next launch
+        // (see CrashRecovery), so they need no action.
         if transcriptionController.isRecording {
+            let salvage = transcriptionController.inFlightText
+            if !salvage.isEmpty {
+                DictationHistoryStore.shared.record(DictationEntry(
+                    durationSeconds: 0,
+                    backend: transcriptionController.currentBackend,
+                    originalText: salvage,
+                    polishedText: salvage,
+                    targetAppBundleID: nil,
+                    targetAppName: nil))
+                DebugLog.shared.log(icon: "💾", label: "Dictation salvaged on quit",
+                                    value: "\(salvage.split(whereSeparator: \.isWhitespace).count) words → history")
+            }
             transcriptionController.cancel()
         }
         ErrorLogger.shared.sweepOldLogs()
@@ -364,6 +379,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// surface a recovery dialog. The user can recover (process chunks into a
     /// real meeting) or discard.
     private func scanForOrphanMeetingsOnLaunch() {
+        reclaimInterruptedImportsOnLaunch()
         let orphans = CrashRecovery.scan(in: meetingStore)
         guard !orphans.isEmpty else { return }
         // Defer slightly so the dialog isn't competing with the missing-permissions
@@ -375,6 +391,37 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // queue subsequent recoveries via onProcessed.
             self.queueRecovery(toRecover)
         }
+    }
+
+    /// Re-runs imports interrupted (crash/quit) before they finished
+    /// transcribing. The copied `audio.<ext>` is complete, so we re-enqueue it
+    /// and trash the blank shell meeting — otherwise it sits in the list
+    /// forever with no transcript and no way to finish.
+    private func reclaimInterruptedImportsOnLaunch() {
+        let interrupted = CrashRecovery.interruptedImports(in: meetingStore)
+        guard !interrupted.isEmpty else { return }
+        let fm = FileManager.default
+        var reenqueue: [URL] = []
+        for item in interrupted {
+            // Move the audio OUT of the meeting folder before deleting the
+            // shell — ImportQueue copies the source lazily when it processes
+            // the item, so the file must survive the delete below.
+            let staged = fm.temporaryDirectory
+                .appendingPathComponent("solwhisper-resumed-import-\(item.meeting.id.uuidString)-\(item.audioURL.lastPathComponent)")
+            try? fm.removeItem(at: staged)
+            do {
+                try fm.moveItem(at: item.audioURL, to: staged)
+            } catch {
+                DebugLog.shared.log(icon: "📥", label: "Import resume skipped",
+                                    value: "couldn't stage \(item.audioURL.lastPathComponent): \(error)", ok: false)
+                continue
+            }
+            reenqueue.append(staged)
+            try? meetingStore.delete(item.meeting)
+            DebugLog.shared.log(icon: "📥", label: "Resuming interrupted import",
+                                value: item.audioURL.lastPathComponent)
+        }
+        if !reenqueue.isEmpty { _ = importQueue.enqueue(reenqueue) }
     }
 
     /// Recovers orphans one at a time. Each recovery's `onProcessed` callback
@@ -731,13 +778,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         transcriptionController.stopRecording { [weak self] text in
             Task { @MainActor in
-                // Force-remove overlay immediately so it can't intercept focus/events
-                self?.overlayWindowController?.forceHide()
-
                 guard let text = text, !text.isEmpty else {
+                    // Nil/empty means nothing was transcribed — a genuinely
+                    // silent take, or (on the Apple→WhisperKit rescue path) a
+                    // 60s offline-transcribe timeout/failure. Either way the
+                    // overlay was showing processing dots; force-hiding it here
+                    // makes the pill just vanish with no explanation. Show a
+                    // brief banner instead so "I dictated and nothing happened"
+                    // becomes a visible, recoverable moment.
                     DebugLog.shared.log(icon: "🛑", label: "No text to paste", ok: false)
+                    self?.overlayWindowController?.showAudioError(
+                        "Nothing was transcribed — try again. If you have Apple Dictation off, download a WhisperKit model in Settings → Models.",
+                        duration: 3.0) { [weak self] in
+                        self?.overlayWindowController?.hideOverlay()
+                    }
                     return
                 }
+
+                // Force-remove overlay immediately so it can't intercept focus/events
+                self?.overlayWindowController?.forceHide()
 
                 // Voice-translate mode: hand the transcript to the SAME
                 // translation bubble Text Snap uses — proven Apple/LLM

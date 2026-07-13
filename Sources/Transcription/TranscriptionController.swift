@@ -121,6 +121,18 @@ class TranscriptionController: ObservableObject {
         isFinalAccumulator = ""
     }
 
+    /// Best-available in-flight text — the latest full live transcript, or the
+    /// finalized accumulator if the live line is empty. Trimmed. Used to
+    /// salvage a dictation the user never got to Stop (e.g. ⌘Q mid-sentence)
+    /// into history instead of discarding it.
+    var inFlightText: String {
+        let raw = liveTranscript.isEmpty ? isFinalAccumulator : liveTranscript
+        return raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The backend currently recording ("apple" / "deepgram" / "whisperkit").
+    var currentBackend: String { activeBackend }
+
     // MARK: - Deepgram launch
 
     private func launchDeepgram() {
