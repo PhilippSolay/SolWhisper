@@ -45,6 +45,16 @@ enum MeetingPostProcessor {
         UserDefaults.standard.bool(forKey: "meetingsAutoIntegrate")
     }
 
+    /// Filename of the post-processing completion marker, written at the very
+    /// END of a successful `run` (after summary/diarize/integrate). Its presence
+    /// means every enabled post-transcript stage finished; its ABSENCE while
+    /// `transcript.json` exists means the run was interrupted mid-post-processing
+    /// (crash/force-quit after the transcript write but before the run finished).
+    /// `CrashRecovery.incompletePostProcessing(in:)` keys off exactly that gap.
+    /// Deliberately distinct from `transcript.json`, which recovery treats as the
+    /// "already transcribed — don't re-transcribe" signal.
+    static let completionMarkerFilename = "postprocessed.flag"
+
     /// Stages that will be attempted for a fresh run (transcribe always; the
     /// rest per toggle). Used by the import queue's step tracker.
     static func enabledStages() -> Set<MeetingProcessingPhase> {
@@ -177,6 +187,13 @@ enum MeetingPostProcessor {
 
         store.appendSessionLog(meeting,
                                "Meeting processing complete — \(allSegments.count) segments")
+
+        // Completion marker — written last, so its presence proves every enabled
+        // post-transcript stage ran. A crash between the transcript write (step 2)
+        // and here leaves transcript.json without this marker, which is what lets
+        // CrashRecovery detect (and, once wired, resume) the dropped stages.
+        writeCompletionMarker(for: meeting, store: store)
+
         return Result(segments: allSegments, summaryMarkdown: summaryMarkdown, completed: true)
     }
 
@@ -237,6 +254,21 @@ enum MeetingPostProcessor {
     }
 
     // MARK: - Helpers
+
+    /// Writes the empty completion marker into the meeting folder. Best-effort:
+    /// a failure here is non-fatal (the meeting is fully processed either way).
+    /// A missing marker only makes recovery re-offer post-processing, which is
+    /// safe to skip — far better than throwing at the finish line.
+    private static func writeCompletionMarker(for meeting: Meeting, store: MeetingStore) {
+        let url = store.folderURL(for: meeting)
+            .appendingPathComponent(completionMarkerFilename)
+        do {
+            try Data().write(to: url)
+        } catch {
+            DebugLog.shared.log(icon: "🏁", label: "Completion marker write failed",
+                                value: "\(error)", ok: false)
+        }
+    }
 
     private static func folderExists(_ meeting: Meeting, store: MeetingStore) -> Bool {
         FileManager.default.fileExists(atPath: store.folderURL(for: meeting).path)

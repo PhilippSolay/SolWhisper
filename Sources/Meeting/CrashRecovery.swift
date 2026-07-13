@@ -93,6 +93,48 @@ enum CrashRecovery {
         return result
     }
 
+    /// A recording whose transcript was written but whose post-processing
+    /// (clean/diarize/summarize/integrate) never finished — the app crashed or
+    /// was force-quit after `transcript.json` (step 2 of `MeetingPostProcessor.run`)
+    /// but before the run wrote its completion marker.
+    struct IncompletePostProcessing {
+        let meeting: Meeting
+    }
+
+    /// Recording meetings that have `transcript.json` but no post-processing
+    /// completion marker (`MeetingPostProcessor.completionMarkerFilename`).
+    /// These crashed mid-post-processing and silently dropped the later stages;
+    /// `scan` deliberately skips them (transcript present = "don't re-transcribe"),
+    /// so without this helper the dropped stages are invisible. Idempotent.
+    ///
+    /// SCOPING / NOT-YET-WIRED: turning this into a user-facing *resume* action
+    /// (re-run the post-transcript stages on the already-written transcript,
+    /// WITHOUT re-transcribing) lives in AppDelegate + MeetingController and needs
+    /// runtime verification — neither is touched here. This helper makes the
+    /// dropped-stages state *detectable* rather than silent. Two guards a caller
+    /// MUST add before auto-resuming:
+    ///   1. LEGACY BACKFILL — meetings completed *before* markers existed also
+    ///      lack the marker. A one-time migration (write a marker for every
+    ///      existing `transcript.json` on first launch of the marker-aware build)
+    ///      is required, else every old meeting is falsely flagged.
+    ///   2. Re-running integrations re-sends webhooks; a resume should gate the
+    ///      integrate stage on idempotency (or skip it) to avoid duplicate fanout.
+    static func incompletePostProcessing(in store: MeetingStore) -> [IncompletePostProcessing] {
+        let fm = FileManager.default
+        var result: [IncompletePostProcessing] = []
+        for meeting in store.meetings where meeting.source == .recording {
+            let folder = store.folderURL(for: meeting)
+            let hasTranscript = fm.fileExists(
+                atPath: folder.appendingPathComponent("transcript.json").path)
+            let hasMarker = fm.fileExists(
+                atPath: folder.appendingPathComponent(MeetingPostProcessor.completionMarkerFilename).path)
+            if hasTranscript && !hasMarker {
+                result.append(IncompletePostProcessing(meeting: meeting))
+            }
+        }
+        return result
+    }
+
     /// Counts `chunk-NNNN-mic.wav` files. Used as a quick "is this worth
     /// recovering" signal in the dialog.
     static func chunkCount(at chunksDirectory: URL) -> Int {
