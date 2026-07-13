@@ -95,10 +95,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             "translateHotkeyModifierMask":   11,  // ⌃⌥⌘
             "translateTargetLanguage":       "en",
             // Voice-translate (speak → transcribe → translate → paste). Hotkey
-            // ships unset (user assigns it in Settings → Hotkey). Apple is the
-            // default engine per the "Apple first" brief; factory falls back to
-            // LLM automatically when Apple Translation is unavailable (<macOS 15).
-            "voiceTranslateEngine":          TranslationEngineKind.apple.rawValue,
+            // ships unset (user assigns it in Settings → Hotkey). It uses the
+            // shared translation engine (`TranslationEngineKind.current`), so
+            // there's no VT-specific engine default — only the target language.
             "voiceTranslateTargetLanguage":  "en",
             // Translate engine + routing — registered alongside the existing
             // role defaults so a fresh install has the same fallback shape
@@ -243,26 +242,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Best-effort clean teardown on quit. If a dictation is mid-flight,
-        // salvage whatever's been transcribed into history BEFORE tearing down
-        // — otherwise ⌘Q before Stop silently discards it (not pasted, not
-        // saved). We save to history rather than paste: the window server is
-        // already tearing down and pasting into a target app mid-quit is racy.
-        // Meetings are chunk-written continuously and recovered on next launch
-        // (see CrashRecovery), so they need no action.
+        // Best-effort clean teardown on quit. If a dictation is mid-flight, tear
+        // it down so the audio engine/temp file is flushed and closed rather
+        // than left half-written. A dictation the user never Stopped is
+        // discarded, not saved (product decision — a half-finished take isn't
+        // worth persisting to history). Meetings are chunk-written continuously
+        // and recovered on next launch (see CrashRecovery), so they need no action.
         if transcriptionController.isRecording {
-            let salvage = transcriptionController.inFlightText
-            if !salvage.isEmpty {
-                DictationHistoryStore.shared.record(DictationEntry(
-                    durationSeconds: 0,
-                    backend: transcriptionController.currentBackend,
-                    originalText: salvage,
-                    polishedText: salvage,
-                    targetAppBundleID: nil,
-                    targetAppName: nil))
-                DebugLog.shared.log(icon: "💾", label: "Dictation salvaged on quit",
-                                    value: "\(salvage.split(whereSeparator: \.isWhitespace).count) words → history")
-            }
             transcriptionController.cancel()
         }
         ErrorLogger.shared.sweepOldLogs()

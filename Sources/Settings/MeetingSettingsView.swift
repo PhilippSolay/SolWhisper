@@ -10,13 +10,10 @@ struct MeetingSettingsView: View {
     @AppStorage("diarizationEngine")      private var diarizationEngine = ""
     @AppStorage("meetingsAudioDucking")   private var audioDucking      = true
     @AppStorage("meetingsClippingDetect") private var clippingDetect    = true
-    @AppStorage("meetingsChunkSeconds")   private var chunkSeconds      = 30
     @AppStorage("meetingsRecordingDisclosure") private var showDisclosure = true
     @AppStorage("meetingsRootPath")       private var meetingsRootPath  = ""
 
     @StateObject private var skillsRegistry = SkillsRegistry.shared
-
-    private let chunkOptions = [15, 30, 60]
 
     var body: some View {
         Form {
@@ -64,13 +61,7 @@ struct MeetingSettingsView: View {
             Section {
                 Toggle("Side-chain ducking (lowers other-app audio when you speak)", isOn: $audioDucking)
                 Toggle("Clipping detector", isOn: $clippingDetect)
-                Picker("Chunk size", selection: $chunkSeconds) {
-                    ForEach(chunkOptions, id: \.self) { Text("\($0) s").tag($0) }
-                }
-            } header: { Text("Audio") } footer: {
-                Text("Larger chunks = fewer disk writes but more lost audio if the app crashes mid-recording.")
-                    .font(.caption).foregroundColor(.secondary)
-            }
+            } header: { Text("Audio") }
 
             Section {
                 Toggle("Show disclosure overlay during recording", isOn: $showDisclosure)

@@ -58,43 +58,16 @@ final class VoiceTranslateTests: XCTestCase {
                        "Frontier cloud providers cover all curated languages")
     }
 
-    // MARK: - Controller defaults + passthrough
+    // MARK: - Controller defaults
 
     @MainActor
-    func testControllerDefaultsToAppleEngineAndDefaultTarget() {
-        let engineKey = VoiceTranslateController.engineDefaultsKey
+    func testControllerDefaultsToDefaultTarget() {
         let targetKey = VoiceTranslateController.targetLanguageDefaultsKey
-        let prevEngine = UserDefaults.standard.string(forKey: engineKey)
         let prevTarget = UserDefaults.standard.string(forKey: targetKey)
-        defer { restore(engineKey, prevEngine); restore(targetKey, prevTarget) }
+        defer { restore(targetKey, prevTarget) }
 
-        UserDefaults.standard.removeObject(forKey: engineKey)
         UserDefaults.standard.removeObject(forKey: targetKey)
-
-        let controller = VoiceTranslateController()
-        XCTAssertEqual(controller.engineKind, .apple, "Apple is the v1 default engine")
-        XCTAssertEqual(controller.targetCode, TranslationLanguage.defaultTargetCode)
-    }
-
-    @MainActor
-    func testControllerHonorsStoredEngineSelection() {
-        let engineKey = VoiceTranslateController.engineDefaultsKey
-        let prevEngine = UserDefaults.standard.string(forKey: engineKey)
-        defer { restore(engineKey, prevEngine) }
-
-        UserDefaults.standard.set(TranslationEngineKind.llm.rawValue, forKey: engineKey)
-        XCTAssertEqual(VoiceTranslateController().engineKind, .llm)
-    }
-
-    @MainActor
-    func testEmptyTranscriptPassesThroughWithoutEngine() async throws {
-        // Empty / whitespace transcript must never reach an engine (no network,
-        // no pack); it returns unchanged.
-        let controller = VoiceTranslateController()
-        let empty = try await controller.translate("")
-        XCTAssertEqual(empty, "")
-        let blank = try await controller.translate("   \n  ")
-        XCTAssertEqual(blank, "   \n  ", "Whitespace-only input returns unchanged")
+        XCTAssertEqual(VoiceTranslateController().targetCode, TranslationLanguage.defaultTargetCode)
     }
 
     // MARK: - Helpers

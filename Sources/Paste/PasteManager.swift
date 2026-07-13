@@ -81,16 +81,22 @@ enum PasteManager {
 
         // 3a. Re-verify focus AFTER stabilizing (the check at step 2 ran before
         // this sleep, during which another app can steal focus). Methods A/B/C
-        // key Cmd-V into whatever is frontmost now, so if the target is no longer
-        // frontmost they would paste dictated text into the wrong app. Abort to
-        // the clipboard instead of leaking it — do not retry or re-activate.
-        let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        // key Cmd-V into whatever is frontmost now — pasting into the wrong app
+        // would leak dictated text. Best-effort recovery: re-activate the target
+        // and retry once; only if it still won't come forward do we leave the
+        // text on the clipboard rather than paste blind.
+        var frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        if shouldAbortPaste(frontmostPID: frontPID, targetPID: target.processIdentifier) {
+            target.activate(options: .activateIgnoringOtherApps)
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        }
         if shouldAbortPaste(frontmostPID: frontPID, targetPID: target.processIdentifier) {
             onClipboardFallback?()
             let frontDesc = frontPID.map { "\($0)" } ?? "nil"
             DebugLog.shared.log(
                 icon: "📋", label: "Paste aborted",
-                value: "focus lost (front=\(frontDesc) target=\(target.processIdentifier)) "
+                value: "target won't focus (front=\(frontDesc) target=\(target.processIdentifier)) "
                      + "— text on clipboard, press ⌘V",
                 ok: false)
             return
