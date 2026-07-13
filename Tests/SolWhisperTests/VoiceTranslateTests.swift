@@ -16,6 +16,20 @@ final class VoiceTranslateTests: XCTestCase {
         XCTAssertEqual(LanguageReadiness.needsDownload.hint, "needs download")
         XCTAssertEqual(LanguageReadiness.unsupported.hint, "not available")
         XCTAssertEqual(LanguageReadiness.modelDependent.hint, "depends on model")
+        XCTAssertEqual(LanguageReadiness.llmFallback.hint, "via AI model",
+                       "Apple-unsupported languages that auto-route to the LLM engine")
+    }
+
+    func testAppleTranslationErrorsAreActionable() {
+        let download = AppleTranslationError.needsDownload("German")
+        XCTAssertTrue(download.errorDescription?.contains("German") == true)
+        XCTAssertTrue(download.errorDescription?.contains("Languages") == true,
+                      "Must point at Settings → Languages where the download runs")
+
+        let unsupported = AppleTranslationError.unsupportedLanguage("Farsi")
+        XCTAssertTrue(unsupported.errorDescription?.contains("Farsi") == true)
+        XCTAssertTrue(unsupported.errorDescription?.contains("Models") == true,
+                      "Must point at configuring an AI model as the way out")
     }
 
     // MARK: - LLM provider-class availability

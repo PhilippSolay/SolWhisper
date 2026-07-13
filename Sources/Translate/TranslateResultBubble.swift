@@ -862,9 +862,41 @@ private struct AppleTranslationModifierBody: ViewModifier {
 
     private func runTranslation(session: TranslationSession) async {
         do {
-            // Confirm the language pair is supported and downloaded. This
-            // surfaces the system download prompt automatically on first run
-            // for a given pair.
+            // Pre-flight the pair instead of letting prepareTranslation()
+            // ambush the bubble with the system download sheet:
+            //   pack missing → deep-link Settings → Languages (download runs
+            //                  visibly there) and show an actionable error;
+            //   unsupported  → Apple never offers it (e.g. Farsi) — the AI
+            //                  model engine takes over when configured.
+            let label = TranslationLanguage.named(targetCode).label
+            let target = Locale.Language(identifier: targetCode)
+            let source = Locale.Language(
+                identifier: sourceCode ?? Locale.current.language.languageCode?.identifier ?? "en")
+            switch await LanguageAvailability().status(from: source, to: target) {
+            case .supported:
+                await MainActor.run {
+                    SettingsDeepLink.open(.languages, downloadLanguage: targetCode)
+                    onError(AppleTranslationError.needsDownload(label).localizedDescription)
+                }
+                return
+            case .unsupported:
+                let hasLLM = await MainActor.run { LLMResolver.resolve(.translation) != nil }
+                if hasLLM {
+                    let output = try await LLMTranslationEngine().translate(
+                        text: sourceText, sourceCode: sourceCode, targetCode: targetCode)
+                    await MainActor.run { onResult(output.translated) }
+                } else {
+                    await MainActor.run {
+                        onError(AppleTranslationError.unsupportedLanguage(label).localizedDescription)
+                    }
+                }
+                return
+            case .installed:
+                break
+            @unknown default:
+                break
+            }
+
             try await session.prepareTranslation()
             let response = try await session.translate(sourceText)
             await MainActor.run {

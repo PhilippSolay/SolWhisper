@@ -1,5 +1,30 @@
 import Foundation
 
+/// Translation engine error with a user-facing message. Lives outside the
+/// `canImport(Translation)` guard so error handling (and its tests) compile
+/// on every OS.
+enum AppleTranslationError: Error, LocalizedError {
+    case failed(String)
+    case timedOut
+    /// The pack for this language is being downloaded in Settings → Languages.
+    case needsDownload(String)
+    /// Apple's translator will never support this language (e.g. Farsi) and
+    /// no AI model is configured to take over.
+    case unsupportedLanguage(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .failed(let message): return message
+        case .timedOut:
+            return "Apple translation timed out. Switch to the AI model engine in Settings → Voice Translate."
+        case .needsDownload(let language):
+            return "The \(language) language pack is downloading in Settings → Languages. Try again once it shows Installed."
+        case .unsupportedLanguage(let language):
+            return "Apple's translator doesn't support \(language). Add an AI model in Settings → Models (or switch the engine in Settings → Voice Translate) to translate it."
+        }
+    }
+}
+
 #if canImport(Translation)
 import AppKit
 import SwiftUI
@@ -25,6 +50,39 @@ final class AppleTranslationEngine: TranslationEngine {
         if let sourceCode, TranslationLanguage.sameLanguage(sourceCode, targetCode) {
             return text
         }
+
+        // Pre-flight the pair so a missing pack never ambushes the user with
+        // the system download sheet over the floating "Translating…" card:
+        //   needsDownload → deep-link Settings → Languages (download visible
+        //                   there, with per-language status) and bail with an
+        //                   actionable message;
+        //   unsupported   → Apple will never offer it (e.g. Farsi) — the AI
+        //                   model engine takes over when one is configured.
+        let label = TranslationLanguage.named(targetCode).label
+        let target = Locale.Language(identifier: targetCode)
+        let source = Locale.Language(
+            identifier: sourceCode ?? Locale.current.language.languageCode?.identifier ?? "en")
+        let status = await LanguageAvailability().status(from: source, to: target)
+        switch status {
+        case .installed:
+            break
+        case .supported:
+            DebugLog.shared.log(icon: "🌍", label: "Language pack missing — opening Settings → Languages",
+                                value: targetCode, ok: false)
+            SettingsDeepLink.open(.languages, downloadLanguage: targetCode)
+            throw AppleTranslationError.needsDownload(label)
+        case .unsupported:
+            if LLMResolver.resolve(.translation) != nil {
+                DebugLog.shared.log(icon: "🌍", label: "Apple can't translate this language — using AI model",
+                                    value: targetCode)
+                return try await LLMVoiceTranslationEngine().translate(
+                    text: trimmed, sourceCode: sourceCode, targetCode: targetCode)
+            }
+            throw AppleTranslationError.unsupportedLanguage(label)
+        @unknown default:
+            break   // let the framework try; worst case it errors as before
+        }
+
         return try await withCheckedThrowingContinuation { continuation in
             let host = HeadlessTranslationHost(
                 sourceText: trimmed,
@@ -33,20 +91,6 @@ final class AppleTranslationEngine: TranslationEngine {
                 continuation: continuation
             )
             host.start()
-        }
-    }
-}
-
-/// Translation engine error with a user-facing message.
-enum AppleTranslationError: Error, LocalizedError {
-    case failed(String)
-    case timedOut
-
-    var errorDescription: String? {
-        switch self {
-        case .failed(let message): return message
-        case .timedOut:
-            return "Apple translation timed out. Switch to the AI model engine in Settings → Voice Translate."
         }
     }
 }

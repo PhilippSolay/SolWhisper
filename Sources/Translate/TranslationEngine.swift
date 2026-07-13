@@ -24,6 +24,8 @@ enum LanguageReadiness: Equatable, Sendable {
     case needsDownload  // supported but the on-device pack must download first
     case unsupported    // this engine can't translate into the language
     case modelDependent // LLM engine on a model whose coverage we can't verify
+    case llmFallback    // Apple can't translate it; the AI model engine takes
+                        // over automatically for this language (e.g. Farsi)
 
     /// Short annotation shown next to a language in settings. `nil` = no badge.
     var hint: String? {
@@ -32,6 +34,7 @@ enum LanguageReadiness: Equatable, Sendable {
         case .needsDownload:  return "needs download"
         case .unsupported:    return "not available"
         case .modelDependent: return "depends on model"
+        case .llmFallback:    return "via AI model"
         }
     }
 }
@@ -109,7 +112,11 @@ enum TranslationAvailability {
         switch status {
         case .installed:   return .ready
         case .supported:   return .needsDownload
-        case .unsupported: return .unsupported
+        case .unsupported:
+            // Apple will never offer this language (e.g. Farsi). The translate
+            // paths auto-route it to the AI model engine when one is routable,
+            // so surface that as the effective state instead of a dead end.
+            return llmReadiness() == .ready ? .llmFallback : .unsupported
         @unknown default:  return .unsupported
         }
     }
