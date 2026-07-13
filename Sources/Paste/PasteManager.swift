@@ -23,6 +23,21 @@ enum PasteManager {
     /// the failure isn't silent (the top "I dictated and nothing happened" case).
     @MainActor static var onClipboardFallback: (() -> Void)?
 
+    // MARK: - Focus guard
+
+    /// Pure decision (unit-testable): must we abort the keystroke-based paste?
+    ///
+    /// Methods A/B/C send Cmd-V to whatever app is *frontmost* right now (via
+    /// System Events or the system-wide focused element), not to a specific pid.
+    /// If another app stole focus after we activated `target`, firing them would
+    /// paste dictated text into the wrong app (Slack / browser / terminal). When
+    /// the frontmost pid no longer matches the target — including when there is
+    /// no frontmost app at all (nil) — we abort and leave the text on the
+    /// clipboard for a manual ⌘V.
+    static func shouldAbortPaste(frontmostPID: pid_t?, targetPID: pid_t) -> Bool {
+        frontmostPID != targetPID
+    }
+
     // MARK: - Paste
 
     @MainActor
@@ -63,6 +78,23 @@ enum PasteManager {
 
         // 3. Stabilize — let text field regain focus
         try? await Task.sleep(nanoseconds: 150_000_000)
+
+        // 3a. Re-verify focus AFTER stabilizing (the check at step 2 ran before
+        // this sleep, during which another app can steal focus). Methods A/B/C
+        // key Cmd-V into whatever is frontmost now, so if the target is no longer
+        // frontmost they would paste dictated text into the wrong app. Abort to
+        // the clipboard instead of leaking it — do not retry or re-activate.
+        let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        if shouldAbortPaste(frontmostPID: frontPID, targetPID: target.processIdentifier) {
+            onClipboardFallback?()
+            let frontDesc = frontPID.map { "\($0)" } ?? "nil"
+            DebugLog.shared.log(
+                icon: "📋", label: "Paste aborted",
+                value: "focus lost (front=\(frontDesc) target=\(target.processIdentifier)) "
+                     + "— text on clipboard, press ⌘V",
+                ok: false)
+            return
+        }
 
         // 4. Try paste methods in order of reliability
 
