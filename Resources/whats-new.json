@@ -2,6 +2,12 @@
   "version": 1,
   "items": [
     {
+      "date": "2026-07-13",
+      "version": "0.7.4",
+      "title": "Model downloads fixed",
+      "body": "large-v3-turbo downloads work now (the old model ID never existed upstream), download progress survives switching settings panes, and a new 597 MB compressed turbo option joins the picker. Interrupted downloads resume instead of showing a false 'available offline'."
+    },
+    {
       "date": "2026-06-29",
       "version": "0.7.1",
       "title": "Voice Translate",
