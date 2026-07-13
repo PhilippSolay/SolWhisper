@@ -187,21 +187,47 @@ final class WhisperKitClient {
 
     // MARK: - Static API (reused by Sprint 2 file import)
 
-    /// Curated v0.4 model list. WhisperKit also exposes
+    /// Curated model list. WhisperKit also exposes
     /// `WhisperKit.fetchAvailableModels()` for the full remote list — these are
     /// the ones we test against and surface in the settings picker.
+    ///
+    /// IDs must match a folder name in the argmaxinc/whisperkit-coreml repo
+    /// (the download glob is `*<id>/*`). OpenAI's "large-v3-turbo" is published
+    /// there as "large-v3-v20240930" — its release-date name — with a
+    /// "_626MB" quantized sibling. A bare "large-v3-turbo" matches nothing
+    /// and throws "No models found".
     nonisolated static let supportedModels: [String] = [
         "tiny.en",
         "base.en",
         "small.en",
-        "large-v3-turbo"
+        "large-v3-v20240930_626MB",
+        "large-v3-v20240930"
     ]
 
     nonisolated static let defaultModel = "base.en"
 
+    /// User-facing names for repo IDs whose canonical form is cryptic.
+    nonisolated static func displayName(for model: String) -> String {
+        switch model {
+        case "large-v3-v20240930":       return "large-v3-turbo"
+        case "large-v3-v20240930_626MB": return "large-v3-turbo (compressed)"
+        default:                         return model
+        }
+    }
+
+    /// v0.7.x shipped "large-v3-turbo" in the picker — an ID that never
+    /// existed upstream, so downloads and meeting transcription threw
+    /// "No models found". Remap any saved selection to the real turbo ID.
+    nonisolated static func migrateLegacyModelIDs(in defaults: UserDefaults = .standard) {
+        for key in ["whisperKitModel", "meetingsWhisperKitModel"]
+        where defaults.string(forKey: key) == "large-v3-turbo" {
+            defaults.set("large-v3-v20240930", forKey: key)
+        }
+    }
+
     /// Custom on-disk model location. Keeps WhisperKit's downloads out of
     /// `~/Documents/huggingface` (its default).
-    static var modelsDirectory: URL {
+    nonisolated static var modelsDirectory: URL {
         let support = (try? FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true
@@ -214,22 +240,50 @@ final class WhisperKitClient {
         return dir
     }
 
-    /// Heuristic check: WhisperKit downloads land in
-    /// `<modelsDirectory>/<repo>/<openai_*-<model>-...>/`. We just walk and
-    /// look for any directory whose name contains the model variant.
-    static func isModelDownloaded(_ model: String) -> Bool {
+    /// Artifacts WhisperKit needs before a variant folder counts as complete.
+    /// The Hub downloader fills the folder file-by-file (each file lands
+    /// atomically, the set doesn't), so folder existence alone only proves a
+    /// download *started*. Verified present in all `supportedModels` variants.
+    nonisolated private static let requiredModelArtifacts = [
+        "MelSpectrogram.mlmodelc/coremldata.bin",
+        "AudioEncoder.mlmodelc/weights/weight.bin",
+        "TextDecoder.mlmodelc/weights/weight.bin",
+        "config.json"
+    ]
+
+    /// Locates the variant folder for `model` under `root`, mirroring
+    /// WhisperKit's own `*<variant>/*` download glob: the folder name must
+    /// END with the variant (`openai_whisper-small.en` ↔ "small.en"). The
+    /// separator requirement keeps "large-v3-v20240930" from claiming its
+    /// "..._626MB" sibling the way a contains() check would.
+    nonisolated static func modelFolder(for model: String, in root: URL) -> URL? {
         let fm = FileManager.default
-        guard fm.fileExists(atPath: modelsDirectory.path),
-              let enumerator = fm.enumerator(at: modelsDirectory,
-                                              includingPropertiesForKeys: [.isDirectoryKey],
-                                              options: [.skipsHiddenFiles]) else { return false }
+        guard fm.fileExists(atPath: root.path),
+              let enumerator = fm.enumerator(at: root,
+                                             includingPropertiesForKeys: [.isDirectoryKey],
+                                             options: [.skipsHiddenFiles]) else { return nil }
         for case let url as URL in enumerator {
             let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-            if isDir && url.lastPathComponent.contains(model) {
-                return true
+            guard isDir else { continue }
+            let name = url.lastPathComponent
+            if name == model || name.hasSuffix("-\(model)") || name.hasSuffix("_\(model)") {
+                return url
             }
         }
-        return false
+        return nil
+    }
+
+    /// True only when every required artifact is on disk — a partially
+    /// downloaded (or interrupted) model reads as NOT downloaded, so the
+    /// settings picker keeps offering the download instead of a false "✓".
+    nonisolated static func isModelDownloaded(_ model: String, in root: URL? = nil) -> Bool {
+        guard let folder = modelFolder(for: model, in: root ?? modelsDirectory) else {
+            return false
+        }
+        let fm = FileManager.default
+        return requiredModelArtifacts.allSatisfy {
+            fm.fileExists(atPath: folder.appendingPathComponent($0).path)
+        }
     }
 
     /// Explicit pre-download with progress, for "Download model now" affordances.

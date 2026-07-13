@@ -242,10 +242,11 @@ final class ImportQueue: ObservableObject, FileImportControllerDelegate {
         case .copying:
             setStage(idx, .transcribing, detail: "Copying file…")
         case .loadingModel(let model, let alreadyDownloaded):
+            let name = WhisperKitClient.displayName(for: model)
             setStage(idx, .transcribing,
                      detail: alreadyDownloaded
-                        ? "Loading model (\(model))…"
-                        : "Downloading model \(model) — first use (~74 MB)…")
+                        ? "Loading model (\(name))…"
+                        : "Downloading model \(name) — first use…")
         case .warming(let audioSeconds):
             let hint = audioSeconds > 0 ? " · \(Self.clock(audioSeconds)) of audio" : ""
             setStage(idx, .transcribing,

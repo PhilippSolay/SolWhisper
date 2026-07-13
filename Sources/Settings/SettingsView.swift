@@ -176,8 +176,11 @@ struct WhisperKitModelPicker: View {
     let title: String
     @Binding var modelID: String
 
-    @State private var downloadProgress: Double? = nil
-    @State private var downloadError: String? = nil
+    // Shared coordinator, NOT view-local @State: the settings detail pane is
+    // rebuilt on every sidebar switch, so local state died mid-download and
+    // the orphaned task kept running invisibly. The shared object survives
+    // navigation and lets both pickers reflect the same download.
+    @ObservedObject private var downloader = WhisperKitModelDownloader.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -187,53 +190,42 @@ struct WhisperKitModelPicker: View {
                 }
             }
             .onChange(of: modelID) { _ in
-                downloadProgress = nil
-                downloadError = nil
                 WhisperKitClient.resetCache()
             }
 
-            if let progress = downloadProgress {
-                ProgressView(value: progress) {
-                    Text("Downloading \(modelID)…").font(.caption)
+            let displayName = WhisperKitClient.displayName(for: modelID)
+            if let fraction = downloader.progress[modelID] {
+                ProgressView(value: fraction) {
+                    Text("Downloading \(displayName)… \(Int(fraction * 100))%")
+                        .font(.caption)
                 }
             } else if WhisperKitClient.isModelDownloaded(modelID) {
-                Text("✓ \(modelID) available offline")
+                Text("✓ \(displayName) available offline")
                     .font(.caption).foregroundColor(.secondary)
             } else {
-                Button("Download \(modelID) now") {
-                    download()
+                Button("Download \(displayName) now") {
+                    downloader.download(modelID)
                 }
             }
-            if let err = downloadError {
+            if let err = downloader.lastError[modelID] {
                 Text(err).font(.caption).foregroundColor(.red)
             }
         }
     }
 
+    // Sizes are the real on-disk download totals from the HF repo (the old
+    // labels quoted parameter counts as MB). tiny.en really is bigger than
+    // base.en — its repo folder ships duplicate .mlpackage copies.
     private func modelLabel(for model: String) -> String {
         switch model {
-        case "tiny.en":          return "tiny.en — 39 MB · fastest, lower accuracy"
-        case "base.en":          return "base.en — 74 MB · balanced (default)"
-        case "small.en":         return "small.en — 244 MB · better accuracy"
-        case "large-v3-turbo":   return "large-v3-turbo — ~1.5 GB · best accuracy"
-        default:                 return model
-        }
-    }
-
-    private func download() {
-        let model = modelID
-        downloadProgress = 0
-        downloadError = nil
-        Task { @MainActor in
-            do {
-                _ = try await WhisperKitClient.downloadModel(model) { fraction in
-                    Task { @MainActor in downloadProgress = fraction }
-                }
-                downloadProgress = nil
-            } catch {
-                downloadError = "\(error.localizedDescription)"
-                downloadProgress = nil
-            }
+        case "tiny.en":  return "tiny.en — 145 MB · fastest, lower accuracy"
+        case "base.en":  return "base.en — 139 MB · balanced (default)"
+        case "small.en": return "small.en — 463 MB · better accuracy"
+        case "large-v3-v20240930_626MB":
+            return "large-v3-turbo (compressed) — 597 MB · near-best accuracy"
+        case "large-v3-v20240930":
+            return "large-v3-turbo — 1.5 GB · best accuracy"
+        default:         return model
         }
     }
 }

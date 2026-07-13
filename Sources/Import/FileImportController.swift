@@ -119,7 +119,7 @@ final class FileImportController {
             try Task.checkCancellation()
 
             // 5. Load model (separate phase so the UI can tell users they may
-            // be waiting on a one-time ~74 MB download).
+            // be waiting on a one-time model download, 139 MB–1.5 GB).
             let modelDownloaded = WhisperKitClient.isModelDownloaded(model)
             update(.loadingModel(modelName: model, alreadyDownloaded: modelDownloaded))
 

@@ -129,6 +129,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         migrateLegacyHotkeyDefaultsIfNeeded()
 
+        // v0.7.3 and earlier offered "large-v3-turbo" in the WhisperKit
+        // picker — an ID that never existed upstream, so downloads and
+        // meeting transcription failed with "No models found". Remap saved
+        // selections to the real turbo ID ("large-v3-v20240930").
+        WhisperKitClient.migrateLegacyModelIDs()
+
         // Pre-alpha.4 default of "pause" sent the system Play/Pause media key
         // on every dictation start, which surprised users by also pausing
         // Spotify/Music/video tabs. New default is "nothing"; existing installs
