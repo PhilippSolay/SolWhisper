@@ -578,19 +578,21 @@ class AppleSpeechClient {
         PreferredInputDevice.releaseInputNode(engine)
         task?.cancel()
         task     = nil
-        // vDSP setup is a Core Foundation-managed handle — nilling the Swift
-        // var is not enough; the backing buffers need an explicit destroy.
-        // WhisperKitClient + MeetingAudioEngine.SpectrumComputer already do
-        // this; missing it here leaked ~1 KB per session.
-        if let setup = fftSetup { vDSP_DFT_DestroySetup(setup) }
-        fftSetup = nil
+        // NOTE: the vDSP_DFT_Setup is deliberately NOT destroyed here. tearDown
+        // runs on the main thread, but emitSpectrum() calls vDSP_DFT_Execute on
+        // the audio-tap thread and a tap callback can still be in flight after
+        // removeTap returns — destroying here would free its buffers out from
+        // under an in-flight execute. Destroyed in deinit instead.
         onLevelUpdate?(0)
         onSpectrumUpdate?([Float](repeating: 0, count: AudioEngine.fftBinCount))
     }
 
     deinit {
-        // Defensive: if start() succeeded and we somehow never reached
-        // tearDown(), still free the vDSP handle.
+        // Sole destroy site for the vDSP handle. By deinit the instance is
+        // unreferenced (a fresh AppleSpeechClient is allocated per session), so
+        // no audio-tap callback can still be running emitSpectrum — the tap
+        // strongifies `self`, which would keep deinit from running mid-execute.
+        // Mirrors MeetingAudioEngine.SpectrumComputer.
         if let setup = fftSetup { vDSP_DFT_DestroySetup(setup) }
     }
 
