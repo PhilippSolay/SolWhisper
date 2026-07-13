@@ -23,8 +23,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return s
     }()
     private var transcriptsWindowController: TranscriptsWindowController?
-    private var importWindows: [URL: ImportProgressWindow] = [:]
-    private var importWindowClosers: [URL: ImportWindowCloser] = [:]
+    /// Serial queue for file imports — every import entry point funnels here
+    /// and progress renders inline in the Transcripts detail area (no windows).
+    private(set) lazy var importQueue: ImportQueue = {
+        let queue = ImportQueue(store: meetingStore)
+        queue.onActivity = { [weak self] in self?.openTranscripts() }
+        queue.onBatchFinished = { [weak self] report in self?.presentImportReport(report) }
+        return queue
+    }()
     private(set) lazy var meetingController: MeetingController = {
         let c = MeetingController(store: meetingStore)
         // Open the Transcripts window with this meeting selected the moment
@@ -825,7 +831,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             transcriptsWindowController = TranscriptsWindowController(
                 store: meetingStore,
                 onUpload: { [weak self] in self?.uploadAudioFile() },
-                meetingController: meetingController
+                meetingController: meetingController,
+                importQueue: importQueue
             )
         }
         transcriptsWindowController?.openAndReload()
@@ -839,7 +846,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             transcriptsWindowController = TranscriptsWindowController(
                 store: meetingStore,
                 onUpload: { [weak self] in self?.uploadAudioFile() },
-                meetingController: meetingController
+                meetingController: meetingController,
+                importQueue: importQueue
             )
         }
         transcriptsWindowController?.openAndSelect(meetingID: meetingID)
@@ -858,37 +866,72 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.prompt = "Import"
         NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK else { return }
-        for url in panel.urls { beginImport(audioURL: url) }
+        importQueue.enqueue(panel.urls)
     }
 
     /// Triggered by drag-and-drop onto the Dock icon (`CFBundleDocumentTypes`),
-    /// or via `open` from Finder. Each URL opens its own progress window.
+    /// or via `open` from Finder. `enqueue` filters to supported audio, dedupes,
+    /// and surfaces the Transcripts window so the queue is visible.
     func application(_ application: NSApplication, open urls: [URL]) {
-        for url in urls {
-            guard FileTranscriber.acceptedExtensions.contains(url.pathExtension.lowercased()) else {
-                continue
-            }
-            beginImport(audioURL: url)
+        importQueue.enqueue(urls)
+    }
+
+    // MARK: - Import result reporting
+
+    /// A lone import surfaces its failure as an error pop-up; a multi-file batch
+    /// shows an end-of-run log of what worked and what didn't. Deferred out of
+    /// the queue's completion call stack before going modal.
+    private func presentImportReport(_ report: ImportQueue.BatchReport) {
+        let total = report.succeeded.count + report.failed.count + report.cancelled.count
+        guard total > 0 else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.showImportReport(report, total: total)
         }
     }
 
-    private func beginImport(audioURL: URL) {
-        if importWindows[audioURL] != nil { return }   // already running
-        let window = ImportProgressWindow(
-            audioURL: audioURL,
-            store: meetingStore,
-            onSuccess: { [weak self] _ in self?.openTranscripts() }
-        )
-        importWindows[audioURL] = window
-        // NSWindow.delegate is weak — store the closer alongside the window so
-        // it stays alive until windowWillClose fires.
-        let closer = ImportWindowCloser { [weak self] in
-            self?.importWindows.removeValue(forKey: audioURL)
-            self?.importWindowClosers.removeValue(forKey: audioURL)
+    private func showImportReport(_ report: ImportQueue.BatchReport, total: Int) {
+        let alert = NSAlert()
+        alert.addButton(withTitle: "OK")
+
+        if total == 1 {
+            // A lone success is self-evident — only interrupt on failure.
+            guard let failure = report.failed.first else { return }
+            alert.alertStyle = .warning
+            alert.messageText = "Couldn't import \(failure.name)"
+            alert.informativeText = failure.reason
+        } else {
+            alert.alertStyle = report.failed.isEmpty ? .informational : .warning
+            let imported = report.succeeded.count
+            alert.messageText = (report.failed.isEmpty && report.cancelled.isEmpty)
+                ? "Imported \(imported) file\(imported == 1 ? "" : "s")"
+                : "Imported \(imported) of \(total) files"
+            alert.informativeText = Self.importLog(report)
         }
-        importWindowClosers[audioURL] = closer
-        window.window?.delegate = closer
-        window.start()
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    /// Builds the multi-file log body: failures listed in full (with reasons);
+    /// successes/cancellations listed but capped so a huge batch stays legible.
+    private static func importLog(_ report: ImportQueue.BatchReport) -> String {
+        var blocks: [String] = []
+        if !report.succeeded.isEmpty {
+            blocks.append("✓ Imported \(report.succeeded.count):\n" + capped(report.succeeded))
+        }
+        if !report.failed.isEmpty {
+            let rows = report.failed.map { "   \($0.name) — \($0.reason)" }.joined(separator: "\n")
+            blocks.append("✗ Failed \(report.failed.count):\n" + rows)
+        }
+        if !report.cancelled.isEmpty {
+            blocks.append("– Cancelled \(report.cancelled.count):\n" + capped(report.cancelled))
+        }
+        return blocks.joined(separator: "\n\n")
+    }
+
+    private static func capped(_ names: [String], limit: Int = 15) -> String {
+        let shown = names.prefix(limit).map { "   \($0)" }
+        let extra = names.count - shown.count
+        return (shown + (extra > 0 ? ["   …and \(extra) more"] : [])).joined(separator: "\n")
     }
 
     // MARK: - Onboarding

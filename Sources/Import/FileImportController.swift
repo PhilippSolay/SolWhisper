@@ -19,7 +19,13 @@ final class FileImportController {
         /// Covers CoreML warmup + audio preprocessing + first-chunk decode.
         case warming(audioSeconds: Double)
         case transcribing(progress: Double, audioSeconds: Double)
-        case writingOutputs
+        /// Shared post-processing stages (`MeetingPostProcessor`), each gated by
+        /// the same `meetingsAuto*` toggles recordings use. Disabled stages
+        /// simply never fire.
+        case cleaning
+        case diarizing
+        case summarizing
+        case sending
         case cancelling
         case done(meetingID: UUID, folderURL: URL, segmentCount: Int, audioSeconds: Double)
         case failed(message: String)
@@ -34,9 +40,17 @@ final class FileImportController {
     private var didCancel = false
 
     init(store: MeetingStore,
-         model: String = WhisperKitClient.defaultModel) {
+         model: String = FileImportController.configuredModel) {
         self.store = store
         self.model = model
+    }
+
+    /// Same WhisperKit model recordings use (Settings → Models → STT Meetings),
+    /// so imported and recorded transcripts come out of the same engine.
+    /// `nonisolated` so it can be used as an `init` default argument.
+    nonisolated static var configuredModel: String {
+        UserDefaults.standard.string(forKey: "meetingsWhisperKitModel")
+            ?? WhisperKitClient.defaultModel
     }
 
     /// Begins the import. Cancellable via `cancel()`.
@@ -127,47 +141,37 @@ final class FileImportController {
             )
             try Task.checkCancellation()
 
-            // 6. Persist outputs
-            update(.writingOutputs)
-            try store.writeTranscript(result.document, for: meeting)
-            let markdown = FileTranscriber.renderMarkdown(result.document, title: meeting.title)
-            try store.writeTranscriptMarkdown(markdown, for: meeting)
+            // 6. Full shared pipeline: clean → write → diarize → summarize →
+            //    send, gated by the same meetingsAuto* toggles recordings use.
+            //    No `finalizeMeeting` hook — duration is already stamped above
+            //    and imports never calendar-link (their timestamp is "now").
+            let processed = await MeetingPostProcessor.run(
+                meeting: meeting,
+                segments: result.document.segments,
+                diarizationAudioURL: destAudioURL,
+                store: store,
+                setPhase: { [weak self] phase in self?.forward(phase) }
+            )
+            try Task.checkCancellation()
+
+            // The meeting folder can be deleted out from under us during
+            // processing; the processor signals that via `completed == false`.
+            // Nothing was written, so surface it and let the queue move on.
+            guard processed.completed else {
+                inFlightMeeting = nil
+                update(.failed(message: "Import interrupted"))
+                return
+            }
 
             store.appendSessionLog(meeting,
-                                   "Import complete — \(result.document.segments.count) segments, \(Int(duration))s audio")
-
-            // 6b. Optional auto-diarization for imports. Same toggle as
-            // live recordings — `meetingsAutoDiarize` + a configured engine.
-            let autoDiarize = UserDefaults.standard.bool(forKey: "meetingsAutoDiarize")
-            let engineConfigured = !(UserDefaults.standard.string(forKey: "diarizationEngine") ?? "").isEmpty
-            if autoDiarize, engineConfigured, !result.document.segments.isEmpty {
-                let outcome = await DiarizationRunner.run(
-                    meeting: meeting,
-                    transcript: result.document,
-                    audioURL: destAudioURL,
-                    store: store,
-                    progress: { _ in }
-                )
-                if case .success(let tagged, let total, let engineID) = outcome {
-                    DebugLog.shared.log(icon: "🎭", label: "Import auto-diarize done",
-                                        value: "\(tagged)/\(total) tagged via \(engineID)")
-                    // Re-render markdown with speaker labels visible.
-                    if let reloaded = try? store.loadTranscript(for: meeting) {
-                        let md = FileTranscriber.renderMarkdown(reloaded, title: meeting.title)
-                        try? store.writeTranscriptMarkdown(md, for: meeting)
-                    }
-                } else if case .failed(let msg) = outcome {
-                    DebugLog.shared.log(icon: "🎭", label: "Import auto-diarize failed",
-                                        value: msg, ok: false)
-                }
-            }
+                                   "Import complete — \(processed.segments.count) segments, \(Int(duration))s audio")
 
             // 7. Done
             inFlightMeeting = nil
             let folder = store.folderURL(for: meeting)
             update(.done(meetingID: meeting.id,
                          folderURL: folder,
-                         segmentCount: result.document.segments.count,
+                         segmentCount: processed.segments.count,
                          audioSeconds: duration))
 
             DebugLog.shared.log(icon: "📥", label: "Import done",
@@ -193,6 +197,19 @@ final class FileImportController {
 
     private func update(_ phase: Phase) {
         delegate?.fileImport(self, didEnter: phase)
+    }
+
+    /// Maps the shared post-processor's phases onto our import phases so the
+    /// queue's step tracker advances Clean → Diarize → Summarize → Send.
+    private func forward(_ phase: MeetingProcessingPhase) {
+        switch phase {
+        case .cleaning:    update(.cleaning)
+        case .diarizing:   update(.diarizing)
+        case .summarizing: update(.summarizing)
+        case .integrating: update(.sending)
+        case .stitching, .transcribing:
+            break  // imports own these stages themselves
+        }
     }
 
     /// Friendly title for the meeting card. Strips extension, replaces

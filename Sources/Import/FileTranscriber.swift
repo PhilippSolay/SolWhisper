@@ -84,22 +84,6 @@ enum FileTranscriber {
     /// Renders a transcript document as a human-readable Markdown string.
     /// Used for the per-meeting `transcript.md` companion file.
     static func renderMarkdown(_ document: TranscriptDocument, title: String) -> String {
-        var out = "# \(title)\n\n"
-        for segment in document.segments {
-            let stamp = formatTimestamp(segment.start)
-            out += "**\(stamp)** \(segment.text)\n\n"
-        }
-        return out
-    }
-
-    private static func formatTimestamp(_ seconds: TimeInterval) -> String {
-        let total = Int(seconds.rounded())
-        let h = total / 3600
-        let m = (total % 3600) / 60
-        let s = total % 60
-        if h > 0 {
-            return String(format: "%d:%02d:%02d", h, m, s)
-        }
-        return String(format: "%d:%02d", m, s)
+        TranscriptMarkdown.render(document, title: title, includeSpeakers: false)
     }
 }

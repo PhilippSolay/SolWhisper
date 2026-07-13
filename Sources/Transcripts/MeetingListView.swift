@@ -8,6 +8,7 @@ struct MeetingListView: View {
     @Binding var selection: UUID?
     let onUpload: () -> Void
     @Binding var searchVisible: Bool
+    @EnvironmentObject private var importQueue: ImportQueue
 
     @State private var filter: String = ""
     @FocusState private var searchFocused: Bool
@@ -24,6 +25,8 @@ struct MeetingListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            importBanner
+
             // Search bar shows/hides via the magnifier toggle in the parent
             // tab bar. Hidden by default to keep the meeting browse view clean.
             if searchVisible {
@@ -98,14 +101,14 @@ struct MeetingListView: View {
         // still clearly the primary affordance.
         if #available(macOS 26.0, *) {
             Button(action: onUpload) {
-                Label("Upload audio file", systemImage: "arrow.up.doc")
+                Label("Upload or drop file", systemImage: "arrow.up.doc")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.glassProminent)
             .controlSize(.large)
         } else {
             Button(action: onUpload) {
-                Label("Upload audio file", systemImage: "arrow.up.doc")
+                Label("Upload or drop file", systemImage: "arrow.up.doc")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
@@ -125,6 +128,46 @@ struct MeetingListView: View {
         .controlSize(.large)
     }
 
+    /// Slim re-entry point shown only when files are importing but the detail
+    /// area is showing something else (a meeting the user clicked into). Tapping
+    /// brings the import queue back to the detail area.
+    @ViewBuilder
+    private var importBanner: some View {
+        if !importQueue.items.isEmpty, !importQueue.presentedInDetail {
+            Button {
+                importQueue.presentedInDetail = true
+            } label: {
+                HStack(spacing: 8) {
+                    if importQueue.isProcessing {
+                        ProgressView().controlSize(.small).scaleEffect(0.7)
+                            .frame(width: 14, height: 14)
+                    } else {
+                        Image(systemName: "tray.full").font(.system(size: 12))
+                    }
+                    Text(importBannerText)
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .background(Color.accentColor.opacity(0.10))
+            Divider()
+        }
+    }
+
+    private var importBannerText: String {
+        if let pos = importQueue.activePosition { return "Importing \(pos) of \(importQueue.total)" }
+        if let summary = importQueue.summaryLine { return summary }
+        return "Imports"
+    }
+
     private var emptyState: some View {
         VStack(spacing: 8) {
             Spacer()
@@ -133,7 +176,7 @@ struct MeetingListView: View {
                 .foregroundColor(.secondary)
             Text("No meetings yet")
                 .font(.system(size: 12, weight: .medium))
-            Text("Record a meeting from the menu bar (⌃⌥⌘M), or upload an audio file.")
+            Text("Record a meeting from the menu bar (⌃⌥⌘M), or drop audio files here to transcribe.")
                 .font(.system(size: 11))
                 .foregroundColor(.secondary)
             Spacer()

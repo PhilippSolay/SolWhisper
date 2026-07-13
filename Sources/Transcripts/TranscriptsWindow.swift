@@ -19,18 +19,22 @@ final class TranscriptsWindowController: NSWindowController {
     private let onUpload: () -> Void
     let selectionModel = TranscriptsSelection()
     private let meetingController: MeetingController
+    private let importQueue: ImportQueue
 
     init(store: MeetingStore,
          onUpload: @escaping () -> Void,
-         meetingController: MeetingController) {
+         meetingController: MeetingController,
+         importQueue: ImportQueue) {
         self.store = store
         self.onUpload = onUpload
         self.meetingController = meetingController
+        self.importQueue = importQueue
 
         let view = TranscriptsRootView(store: store,
                                        onUpload: onUpload,
                                        selectionModel: selectionModel)
             .environmentObject(meetingController)
+            .environmentObject(importQueue)
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]

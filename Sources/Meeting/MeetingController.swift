@@ -386,12 +386,6 @@ final class MeetingController: ObservableObject {
         DebugLog.shared.log(icon: "🛑", label: "Meeting cancelled — folder discarded")
     }
 
-    /// True while the meeting's on-disk folder still exists. Used as a
-    /// "deleted out from under us" guard in the post-processing pipeline.
-    private func meetingFolderExists(_ meeting: Meeting) -> Bool {
-        FileManager.default.fileExists(atPath: store.folderURL(for: meeting).path)
-    }
-
     /// Cancels the running post-processing pipeline if it's working on the
     /// meeting the user is about to delete. Called by the detail view before
     /// `store.delete` so the pipeline stops before it can re-write the folder.
@@ -530,124 +524,36 @@ final class MeetingController: ObservableObject {
         // Sort by start time so [Me] / [Other] interleave naturally.
         allSegments.sort(by: { $0.start < $1.start })
 
-        // Optional LLM cleanup — fired after stitch when the user has the
-        // Auto-clean toggle on (Settings → STT Meetings). Reuses the
-        // dictation-side polish-rule toggles (remove filler / fix punctuation /
-        // fix grammar) so there's one set of rules across both modes.
-        let autoClean = (UserDefaults.standard.object(forKey: "meetingsAutoCleanTranscript") as? Bool) ?? true
-        if autoClean,
-           !allSegments.isEmpty,
-           let resolved = LLMResolver.resolve(.cleanup) {
-            setPhase(.cleaning, for: meeting)
-            let cleanStart = Date()
-            let pass = CleanupPass(client: resolved.client, model: resolved.modelID)
-            do {
-                allSegments = try await pass.clean(allSegments, forceAllRulesIfEmpty: true)
-                logPhaseElapsed("Auto-clean", since: cleanStart,
-                                detail: "\(allSegments.count) segments")
-            } catch {
-                DebugLog.shared.log(icon: "🧹", label: "Auto-clean failed",
-                                    value: error.localizedDescription, ok: false)
-                // Keep raw segments on failure — meeting still ships.
-            }
-        }
-
-        // Last checkpoint before we start persisting outputs. If the user
-        // deleted the meeting (or the pipeline was cancelled) while transcribing,
-        // bail now — otherwise writeTranscript/update below re-create the trashed
-        // folder and resurrect a zombie meeting in the list. The `defer` at the
-        // top resets state cleanly.
-        if Task.isCancelled || !meetingFolderExists(meeting) {
-            DebugLog.shared.log(icon: "🗑", label: "Meeting removed mid-processing — skipping writes",
-                                value: meeting.folderName)
-            return
-        }
-
-        let document = TranscriptDocument(meetingID: meeting.id, segments: allSegments)
-        do {
-            try store.writeTranscript(document, for: meeting)
-            let md = renderMarkdown(document, title: meeting.title)
-            try store.writeTranscriptMarkdown(md, for: meeting)
-        } catch {
-            DebugLog.shared.log(icon: "📝", label: "Transcript write failed",
-                                value: "\(error)", ok: false)
-        }
-
-        // Stamp duration onto the meeting (mic file length is canonical).
-        var updated = meeting
-        updated.durationSeconds = audioDurationSeconds(micOutURL) ?? 0
-        try? store.update(updated)
-
-        // Auto-link calendar event — if no event is linked yet and the
-        // best-match has reasonable confidence, attach it now so the user
-        // (and the summary prompt) immediately see the event title and
-        // attendee list. The match is purely time-overlap based — see
-        // CalendarIntegration.bestMatch.
-        if updated.calendarEventID == nil {
-            updated = await autoLinkCalendarEvent(meeting: updated)
-        }
-
-        // Optional auto-diarization. Runs on the COMBINED audio (mixed
-        // mic+system stream) so we get speaker letters that include both
-        // sides of the call. Replaces the channel-based [Me]/[Other] tags
-        // visually but keeps them in the model for back-compat.
-        let autoDiarize = UserDefaults.standard.bool(forKey: "meetingsAutoDiarize")
-        let engineConfigured = !(UserDefaults.standard.string(forKey: "diarizationEngine") ?? "").isEmpty
-        if autoDiarize, engineConfigured, !allSegments.isEmpty {
-            setPhase(.diarizing, for: meeting)
-            let diarizeStart = Date()
-            let combinedURL = store.audioURL(for: meeting, ext: "m4a")
-            let docCopy = TranscriptDocument(meetingID: meeting.id, segments: allSegments)
-            let outcome = await DiarizationRunner.run(
-                meeting: updated,
-                transcript: docCopy,
-                audioURL: combinedURL,
-                store: store,
-                progress: { _ in }
-            )
-            if case .success(let tagged, let total, let engineID) = outcome {
-                logPhaseElapsed("Auto-diarize", since: diarizeStart,
-                                detail: "\(tagged)/\(total) tagged via \(engineID)")
-                // Reload from disk to get the persisted speakerID assignments.
-                if let reloaded = try? store.loadTranscript(for: updated) {
-                    allSegments = reloaded.segments
-                    let md = renderMarkdown(reloaded, title: updated.title)
-                    try? store.writeTranscriptMarkdown(md, for: updated)
+        // Persist + post-process. Everything from clean → send is shared with
+        // file imports via MeetingPostProcessor so the two paths can't drift.
+        // The `finalizeMeeting` hook stamps duration + calendar-links the
+        // meeting once its folder is confirmed present (after clean, before any
+        // writes) — preserving the old post-clean checkpoint that stops a
+        // meeting deleted mid-processing from being resurrected.
+        let combinedURL = store.audioURL(for: meeting, ext: "m4a")
+        let outcome = await MeetingPostProcessor.run(
+            meeting: meeting,
+            segments: allSegments,
+            diarizationAudioURL: combinedURL,
+            store: store,
+            setPhase: { [weak self] phase in self?.setPhase(phase, for: meeting) },
+            finalizeMeeting: { [weak self] pending in
+                guard let self else { return pending }
+                var updated = pending
+                updated.durationSeconds = self.audioDurationSeconds(micOutURL) ?? 0
+                try? self.store.update(updated)
+                if updated.calendarEventID == nil {
+                    updated = await self.autoLinkCalendarEvent(meeting: updated)
                 }
-            } else if case .failed(let msg) = outcome {
-                DebugLog.shared.log(icon: "🎭", label: "Auto-diarize failed",
-                                    value: msg, ok: false)
+                return updated
             }
+        )
+        allSegments = outcome.segments
+
+        if outcome.completed {
+            DebugLog.shared.log(icon: "🎬", label: "Meeting processing done",
+                                value: "\(meeting.folderName) · \(allSegments.count) segments · total \(Self.elapsedString(since: pipelineStart))")
         }
-
-        // Sprint 5 — optional auto-summarize. Off by default — the user can
-        // also trigger summarize from the Transcripts UI later (Sprint 5 polish).
-        var summaryMarkdown = ""
-        if UserDefaults.standard.bool(forKey: "meetingsAutoSummarize"),
-           !allSegments.isEmpty {
-            setPhase(.summarizing, for: meeting)
-            let summaryStart = Date()
-            summaryMarkdown = await runSummary(meeting: updated, segments: allSegments)
-            logPhaseElapsed("Auto-summarize", since: summaryStart,
-                            detail: "\(summaryMarkdown.count) chars")
-        }
-
-        // Sprint 6 — optional integrations fan-out.
-        if UserDefaults.standard.bool(forKey: "meetingsAutoIntegrate") {
-            setPhase(.integrating, for: meeting)
-            let integrateStart = Date()
-            let transcriptMD = renderMarkdown(document, title: updated.title)
-            await fanOutToIntegrations(meeting: updated,
-                                        transcriptMarkdown: transcriptMD,
-                                        summaryMarkdown: summaryMarkdown)
-            logPhaseElapsed("Integrations fan-out", since: integrateStart)
-        }
-
-        store.appendSessionLog(updated,
-                               "Meeting processing complete — \(allSegments.count) segments")
-
-        DebugLog.shared.log(icon: "🎬", label: "Meeting processing done",
-                            value: "\(meeting.folderName) · \(allSegments.count) segments · total \(Self.elapsedString(since: pipelineStart))")
         // Cleanup happens in the function-level defer above.
     }
 
@@ -756,74 +662,6 @@ final class MeetingController: ObservableObject {
         DebugLog.shared.log(icon: "📅", label: "Calendar auto-linked",
                             value: "\(title) · overlap=\(Int(overlap))s · \(attendees.count) attendees")
         return updated
-    }
-
-    /// Picks the configured skill + LLM, runs the summary, persists it.
-    /// Returns the summary markdown (or an empty string on failure).
-    private func runSummary(meeting: Meeting,
-                            segments: [TranscriptSegment]) async -> String {
-        let skillID = UserDefaults.standard.string(forKey: "meetingsDefaultSkillID") ?? "meeting-summary"
-        let registry = SkillsRegistry.shared
-
-        guard let resolved = LLMResolver.resolve(.summary) else {
-            DebugLog.shared.log(icon: "📝", label: "Summary skipped",
-                                value: "no LLM routing resolved", ok: false)
-            return ""
-        }
-        let generator = SummaryGenerator(client: resolved.client,
-                                          provider: resolved.providerLabel,
-                                          model: resolved.modelID)
-
-        // Prefer the SkillPack path with auto-classify when the configured
-        // skill matches a loaded pack. Falls back to the flat-skill path for
-        // legacy built-ins (sales-call, standup, etc.).
-        if let pack = registry.skillPacks.first(where: { $0.id == skillID })
-            ?? registry.meetingSummaryPack {
-            do {
-                let summary = try await generator.generate(meeting: meeting,
-                                                            segments: segments,
-                                                            pack: pack,
-                                                            meetingType: nil)
-                try store.writeSummary(summary, for: meeting)
-                DebugLog.shared.log(icon: "📝", label: "Summary written",
-                                    value: "pack=\(pack.id) type=\(summary.meetingType ?? "?") model=\(summary.llmModel)")
-                return summary.rawMarkdown
-            } catch {
-                DebugLog.shared.log(icon: "📝", label: "Summary failed",
-                                    value: "\(error)", ok: false)
-                return ""
-            }
-        }
-
-        let skill = registry.skill(withID: skillID) ?? registry.defaultSkill
-        do {
-            let summary = try await generator.generate(meeting: meeting,
-                                                        segments: segments,
-                                                        skill: skill)
-            try store.writeSummary(summary, for: meeting)
-            DebugLog.shared.log(icon: "📝", label: "Summary written",
-                                value: "skill=\(skill.id) model=\(summary.llmModel)")
-            return summary.rawMarkdown
-        } catch {
-            DebugLog.shared.log(icon: "📝", label: "Summary failed",
-                                value: "\(error)", ok: false)
-            return ""
-        }
-    }
-
-    /// Fires Hermes + Obsidian + (future) generic webhooks. Failures log
-    /// but don't block other integrations. Thin wrapper over the shared
-    /// `IntegrationFanout` helper so the on-demand button in the detail
-    /// view and the auto-fire path stay in lockstep.
-    private func fanOutToIntegrations(meeting: Meeting,
-                                       transcriptMarkdown: String,
-                                       summaryMarkdown: String) async {
-        _ = await IntegrationFanout.send(
-            meeting: meeting,
-            transcriptMarkdown: transcriptMarkdown,
-            summaryMarkdown: summaryMarkdown,
-            audioFileURL: store.audioFileURL(for: meeting)
-        )
     }
 
     // MARK: - Audio encoding helpers
@@ -998,25 +836,6 @@ final class MeetingController: ObservableObject {
         let frames = Double(f.length)
         let rate = f.processingFormat.sampleRate
         return rate > 0 ? frames / rate : nil
-    }
-
-    private nonisolated func renderMarkdown(_ doc: TranscriptDocument, title: String) -> String {
-        var out = "# \(title)\n\n"
-        for s in doc.segments {
-            let speaker = s.speaker == .me ? "[Me]" : (s.speaker == .other ? "[Other]" : "")
-            let stamp = formatTimestamp(s.start)
-            out += "**\(stamp)** \(speaker) \(s.text)\n\n"
-        }
-        return out
-    }
-
-    private nonisolated func formatTimestamp(_ seconds: TimeInterval) -> String {
-        let total = Int(seconds.rounded())
-        let h = total / 3600
-        let m = (total % 3600) / 60
-        let s = total % 60
-        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
-        return String(format: "%d:%02d", m, s)
     }
 
     // MARK: - Permission helper

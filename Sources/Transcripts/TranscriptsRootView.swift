@@ -5,6 +5,7 @@ struct TranscriptsRootView: View {
     @ObservedObject var store: MeetingStore
     let onUpload: () -> Void
     @ObservedObject var selectionModel: TranscriptsSelection
+    @EnvironmentObject private var importQueue: ImportQueue
 
     enum Tab: String, Hashable, CaseIterable, Identifiable {
         case meetings = "Meetings"
@@ -14,6 +15,7 @@ struct TranscriptsRootView: View {
 
     @State private var tab: Tab = .meetings
     @State private var searchVisible: Bool = false
+    @State private var isDropTargeted = false
 
     var body: some View {
         NavigationSplitView {
@@ -57,8 +59,16 @@ struct TranscriptsRootView: View {
         } detail: {
             switch tab {
             case .meetings:
-                if let id = selectionModel.selection,
-                   let meeting = store.meetings.first(where: { $0.id == id }) {
+                if importQueue.presentedInDetail, !importQueue.items.isEmpty {
+                    ImportQueueDetailView(
+                        queue: importQueue,
+                        onOpenMeeting: { id in
+                            importQueue.presentedInDetail = false
+                            selectionModel.selection = id
+                        }
+                    )
+                } else if let id = selectionModel.selection,
+                          let meeting = store.meetings.first(where: { $0.id == id }) {
                     // Force a fresh view identity per meeting. Without this,
                     // NavigationSplitView reuses the same MeetingDetailView
                     // instance across selection changes — @State (transcript,
@@ -79,6 +89,40 @@ struct TranscriptsRootView: View {
         }
         .toolbar(.hidden)
         .frame(minWidth: 800, minHeight: 520)
+        .dropDestination(for: URL.self) { urls, _ in
+            importQueue.enqueue(urls)
+            return true   // we surface unsupported files ourselves, so always accept
+        } isTargeted: { targeted in
+            isDropTargeted = targeted
+        }
+        .overlay {
+            if isDropTargeted { dropOverlay }
+        }
+        .onChange(of: selectionModel.selection) { _, newValue in
+            // Picking a meeting swaps the detail away from the import queue;
+            // the sidebar banner brings the queue back.
+            if newValue != nil { importQueue.presentedInDetail = false }
+        }
+    }
+
+    private var dropOverlay: some View {
+        ZStack {
+            Color.accentColor.opacity(0.08)
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [8]))
+                .padding(16)
+            VStack(spacing: 10) {
+                Image(systemName: "arrow.down.doc")
+                    .font(.system(size: 34))
+                Text("Drop audio to transcribe")
+                    .font(.system(size: 15, weight: .medium))
+                Text("Multiple files queue and run one after another.")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .foregroundColor(.accentColor)
+        .allowsHitTesting(false)
     }
 
     private var emptyMeetingsState: some View {
@@ -89,12 +133,12 @@ struct TranscriptsRootView: View {
                 .foregroundColor(.secondary)
             Text("Pick a meeting")
                 .font(.system(size: 14, weight: .medium))
-            Text("Choose a meeting from the sidebar, or upload an audio file.")
+            Text("Choose a meeting from the sidebar, or drop audio files anywhere in this window to transcribe.")
                 .font(.system(size: 12))
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 320)
-            Button("Upload audio file…") { onUpload() }
+                .frame(maxWidth: 340)
+            Button("Upload or drop file") { onUpload() }
                 .padding(.top, 4)
             Spacer()
         }
