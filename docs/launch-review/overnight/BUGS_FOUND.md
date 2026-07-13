@@ -1,10 +1,24 @@
 # BUGS_FOUND — findings + fix status
 
-**UPDATE:** every BLOCKER/HIGH below except notarization (#B-2, Philipp's) is now **FIXED on this branch**
-(265 tests green) — see the table in SUMMARY.md for the commit per item. Their entries are kept here for the
-record and because the behavior changes (paste/dictation/translate/import/rescue) still want runtime
-confirmation on the signed build — each maps to a `QA-CHECKLIST.md` item. The **MEDIUM/LOW/jargon** sections
-below remain genuinely open (not launch-blocking). Each item: what, where, fix approach, which QA item proves it.
+**UPDATE 2 (2026-07-13):** the MEDIUM/LOW batch is now **mostly fixed on-branch too** (294 tests green).
+Every BLOCKER/HIGH except notarization (#B-2) was already fixed. Of the MEDIUM/LOW below, the following are
+now **FIXED**: fftSetup use-after-free · offline first-meeting error state · Obsidian filename traversal ·
+crash-after-transcript (now *detectable* — completion marker + `incompletePostProcessing`; auto-resume is a
+wired follow-up) · two inert Settings pickers · ImportQueue cancel race · Import + LLMTranslationEngine test
+seams · silent Keychain-write (SecretsStore.lastWriteError + surfaced in Models settings) · import-completion
+notification · MCP memory-DoS · VoiceOver labels · clipboard Universal-Clipboard leak (privacy marker; full
+save/restore deferred) · integration-URL https · MCP RNG/chmod · /tmp staging · Deepgram print · beta-installer
+notice · ConcurrencyDesign.md drift · 5 dead-code functions · jargon sweep.
+
+**Still OPEN by decision / scope** (not launch-blocking): deprecated mic-auth API — **NOT a bug** on macOS
+(`AVCaptureDevice.requestAccess(for:.audio)` is current; the lens conflated it with iOS `AVAudioSession`) ·
+large-file splits (refactor, post-launch) · supply-chain pinning (Q8: latest-matching) · the systemic ~11
+`try? store.update` metadata writes (only the highest-value Keychain path was surfaced; full save/restore across
+all sites deferred) · crash-after-transcript *auto-resume* (needs legacy-backfill + integration-idempotency
+guards + runtime QA; the detection landed).
+
+The BLOCKER/HIGH entries below are kept for the record and map to `QA-CHECKLIST.md` items for signed-build
+confirmation. Each item: what, where, fix approach, which QA item proves it.
 
 ## BLOCKER (must fix before public launch)
 
