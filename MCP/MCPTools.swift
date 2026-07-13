@@ -5,6 +5,17 @@ import Foundation
 /// in MCP's `content[]` shape (an array of `{type: "text", text: "..."}`).
 enum MCPTools {
 
+    /// Upper bound on any `limit` argument. A single tool call must not be able
+    /// to request an unbounded number of rows (memory + response-size DoS).
+    static let maxLimit = 500
+
+    /// Reads `limit` from `args`, applying `fallback` when absent and clamping
+    /// into `1...maxLimit` so a hostile or buggy client can't over-fetch.
+    private static func clampedLimit(_ args: [String: Any], fallback: Int) -> Int {
+        let requested = args["limit"] as? Int ?? fallback
+        return max(1, min(requested, maxLimit))
+    }
+
     /// Tool catalog returned by `tools/list`.
     static var all: [[String: Any]] {
         [
@@ -15,7 +26,7 @@ enum MCPTools {
                     "properties": [
                         "since": ["type": "string", "description": "Optional ISO-8601 date; only meetings on/after this date."],
                         "query": ["type": "string", "description": "Optional case-insensitive title substring."],
-                        "limit": ["type": "integer", "description": "Max rows (default 50)."]
+                        "limit": ["type": "integer", "description": "Max rows (default 50, max 500)."]
                     ]
                  ]),
             tool(name: "get_meeting",
@@ -33,7 +44,7 @@ enum MCPTools {
                     "type": "object",
                     "properties": [
                         "query": ["type": "string", "description": "Search string (case-insensitive substring match)."],
-                        "limit": ["type": "integer", "description": "Max hits (default 20)."]
+                        "limit": ["type": "integer", "description": "Max hits (default 20, max 500)."]
                     ],
                     "required": ["query"]
                  ]),
@@ -44,7 +55,7 @@ enum MCPTools {
                     "properties": [
                         "since": ["type": "string", "description": "Optional ISO-8601 date."],
                         "query": ["type": "string", "description": "Optional substring match across original/polished text."],
-                        "limit": ["type": "integer", "description": "Max rows (default 50)."]
+                        "limit": ["type": "integer", "description": "Max rows (default 50, max 500)."]
                     ]
                  ]),
             tool(name: "list_skills",
@@ -83,7 +94,7 @@ enum MCPTools {
     // MARK: - Implementations
 
     private static func listMeetings(_ args: [String: Any], _ storage: MCPStorage) -> [[String: Any]] {
-        let limit = args["limit"] as? Int ?? 50
+        let limit = clampedLimit(args, fallback: 50)
         let query = args["query"] as? String
         let since = parseISO(args["since"] as? String)
         let rows = storage.listMeetings(query: query, since: since, limit: limit)
@@ -126,7 +137,7 @@ enum MCPTools {
 
     private static func searchTranscripts(_ args: [String: Any], _ storage: MCPStorage) -> [[String: Any]] {
         let query = args["query"] as? String ?? ""
-        let limit = args["limit"] as? Int ?? 20
+        let limit = clampedLimit(args, fallback: 20)
         let hits = storage.searchTranscripts(query: query, limit: limit)
         return hits.map { h in
             [
@@ -138,7 +149,7 @@ enum MCPTools {
     }
 
     private static func listDictationHistory(_ args: [String: Any], _ storage: MCPStorage) -> [[String: Any]] {
-        let limit = args["limit"] as? Int ?? 50
+        let limit = clampedLimit(args, fallback: 50)
         let query = args["query"] as? String
         let since = parseISO(args["since"] as? String)
         let rows = storage.listDictationHistory(query: query, since: since, limit: limit)

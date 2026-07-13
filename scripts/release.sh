@@ -151,9 +151,11 @@ echo "  ✓ Built $APP_NAME $VERSION (build $BUILD)"
 
 echo "▶ Package DMG"
 
-STAGING="/tmp/$APP_NAME-release-staging"
-rm -rf "$STAGING" "$DMG_PATH"
-mkdir -p "$STAGING"
+# mktemp -d avoids a predictable /tmp path a co-tenant could pre-create or
+# symlink-race on a shared host.
+STAGING=$(mktemp -d "${TMPDIR:-/tmp}/${APP_NAME}-release-staging.XXXXXX")
+[ -n "$STAGING" ] && [ -d "$STAGING" ] || { echo "  ✗ staging mktemp failed"; exit 1; }
+rm -f "$DMG_PATH"
 cp -R "$APP_PATH" "$STAGING/$APP_NAME.app"
 
 # CRITICAL: re-sign so Sparkle.framework's Team ID matches the host's
@@ -187,17 +189,19 @@ sign_and_notarize() {
         # the bundle. Stapling is what lets the app launch offline without
         # contacting Apple every time.
         echo "▶ Notarize (this can take 1–10 minutes)"
-        local notary_zip="/tmp/$APP_NAME-notarize-$$.zip"
-        rm -f "$notary_zip"
+        local notary_dir
+        notary_dir=$(mktemp -d "${TMPDIR:-/tmp}/${APP_NAME}-notarize.XXXXXX")
+        [ -n "$notary_dir" ] && [ -d "$notary_dir" ] || { echo "  ✗ notarize mktemp failed"; exit 1; }
+        local notary_zip="$notary_dir/$APP_NAME.zip"
         /usr/bin/ditto -c -k --keepParent "$app" "$notary_zip"
         if ! xcrun notarytool submit "$notary_zip" \
                 --keychain-profile "$SW_NOTARIZE_PROFILE" \
                 --wait; then
             echo "  ✗ notarytool submission failed — check output above"
-            rm -f "$notary_zip"
+            rm -rf "$notary_dir"
             exit 1
         fi
-        rm -f "$notary_zip"
+        rm -rf "$notary_dir"
         xcrun stapler staple "$app"
         if ! xcrun stapler validate "$app" >/dev/null 2>&1; then
             echo "  ✗ stapler validate failed"
@@ -305,9 +309,9 @@ if [ -z "${SW_SKIP_UNIVERSAL:-}" ]; then
     echo "  ✓ Universal binary verified (x86_64 + arm64)"
 
     echo "▶ Package universal DMG"
-    USTAGING="/tmp/$APP_NAME-release-staging-universal"
-    rm -rf "$USTAGING" "$UNIVERSAL_DMG_PATH"
-    mkdir -p "$USTAGING"
+    USTAGING=$(mktemp -d "${TMPDIR:-/tmp}/${APP_NAME}-release-staging-universal.XXXXXX")
+    [ -n "$USTAGING" ] && [ -d "$USTAGING" ] || { echo "  ✗ universal staging mktemp failed"; exit 1; }
+    rm -f "$UNIVERSAL_DMG_PATH"
     cp -R "$UAPP_PATH" "$USTAGING/$APP_NAME.app"
     sign_and_notarize "$USTAGING/$APP_NAME.app"
     ln -s /Applications "$USTAGING/Applications"
