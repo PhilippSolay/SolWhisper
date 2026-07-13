@@ -74,15 +74,35 @@ MCP token gate (4 data methods fail-closed) · Kiros (injectable session, exhaus
 audio HAL single-resume-safe every exit path · Sparkle EdDSA fail-closed (survived the release.sh rewrite) ·
 import correctly reuses the shared MeetingPostProcessor · git history secret-free through HEAD.
 
-## Fixes applied this pass (on the review branch, `[REVIEW]` commits, 248 tests green)
-1. **ChunkWriter rotation index** (table #3) — the triple-confirmed data-integrity fix, + a new
-   `ChunkWriterTests` (the rotation path had zero coverage).
-2. **`local-secrets.json` bundle exclude** (table #13) — one-line `project.yml`.
-3. **Deepgram Keychain seed** — `seedLocalSecrets` now routes all `Keys.migratable` secrets to Keychain.
+## Fixes applied on the review branch (`[REVIEW]` commits, **265 tests green**, build clean)
 
-Everything else in the tables is documented in [BUGS_FOUND.md](BUGS_FOUND.md) with a fix approach — held out
-of this pass because it needs behavior changes + runtime QA (paste/dictation/translate/import), not a mechanical
-edit. Those are the Phase 6 fix loop, sequenced against the signed-build QA in [QA-CHECKLIST.md](QA-CHECKLIST.md).
+**All of the code BLOCKER + HIGH items are now fixed on-branch** (+17 new tests). The notarization
+blocker (#2) and privacy-policy hosting remain Philipp's. Runtime behavior of the UI/paste/dictation fixes
+still needs confirmation on the signed build — see [QA-CHECKLIST.md](QA-CHECKLIST.md) (items tagged with each `H-n`).
+
+| # | Fix | Commit |
+|---|-----|--------|
+| 1 | Translate badge reflects engine actually used (no "On-device" on cloud path); "AI model" copy | `fix(translate)` |
+| 3 | ChunkWriter rotation index off-by-one + `ChunkWriterTests` | `fix(meeting): ChunkWriter` |
+| 4 | Interrupted-import recovery (scan excludes imports; re-enqueue from copied audio) | `fix(meeting)` + `fix(dictation)` |
+| 5 | Writer-bootstrap failure → visible error + discard empty meeting (not empty-complete) | `fix(meeting)` |
+| 6 | Quit-mid-dictation salvages in-flight text to history | `fix(dictation)` |
+| 7 | Wrong-app paste → abort to clipboard on focus loss + `PasteManagerTests` | `fix(paste)` |
+| 8 | WhisperKit-rescue empty/timeout → visible banner (no silent vanish) | `fix(dictation)` |
+| 9 | `failUnavailable` — *deferred* (see note) | — |
+| 11 | Release: create+verify asset before appcast; ad-hoc publish guard; deterministic build product | `fix(release)` |
+| 13 | `local-secrets.json` bundle exclude | `fix(security)` |
+| H-6 | Translate queues the actually-missing language pack (not English→English) | `fix(translate)` |
+| — | Deepgram + all `Keys.migratable` secrets seeded to Keychain | `fix(security)` |
+| — | Mic-only meeting flag + "Mic only" badge (H-8) | `fix(meeting)` |
+
+**Decisions I took** (flagged in [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md) — override if you disagree): translate
+fallback = label-and-proceed (no consent gate); quit-mid-dictation = save-to-history, not paste; wrong-app
+paste = abort-to-clipboard, not retry.
+
+**Still open** (MED/LOW, not launch-blocking) in [BUGS_FOUND.md](BUGS_FOUND.md): fftSetup use-after-free, offline
+first-meeting spinner, mic-only warning suppressibility, `failUnavailable` banner copy, Obsidian filename
+traversal, beta-installer exclusion, dead-code deletions, VoiceOver labels, jargon sweep.
 
 ## Correctness & coverage (lenses 4–5)
 - **No new crash** beyond the ChunkWriter path: the one remaining force-cast (`PasteManager` `as!`) is guarded by

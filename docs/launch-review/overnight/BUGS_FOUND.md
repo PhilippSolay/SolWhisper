@@ -1,8 +1,10 @@
-# BUGS_FOUND — found, not fixed this pass (needs behavior change + runtime QA)
+# BUGS_FOUND — findings + fix status
 
-The three mechanical fixes are already committed on this branch (see SUMMARY). Everything below needs a
-behavior/logic change that should be verified against a running signed build (Phase 4 QA), not merged blind.
-Ordered for the Phase 6 fix loop. Each item: what, where, why held, fix approach, which QA item proves it.
+**UPDATE:** every BLOCKER/HIGH below except notarization (#B-2, Philipp's) is now **FIXED on this branch**
+(265 tests green) — see the table in SUMMARY.md for the commit per item. Their entries are kept here for the
+record and because the behavior changes (paste/dictation/translate/import/rescue) still want runtime
+confirmation on the signed build — each maps to a `QA-CHECKLIST.md` item. The **MEDIUM/LOW/jargon** sections
+below remain genuinely open (not launch-blocking). Each item: what, where, fix approach, which QA item proves it.
 
 ## BLOCKER (must fix before public launch)
 
