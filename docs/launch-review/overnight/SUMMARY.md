@@ -59,6 +59,14 @@ hash pin); Deepgram `print()` noise; ConcurrencyDesign.md still describes unbuil
 "Diarize"/"LLM"/"WER"/Parakeet strings); AppDelegate god object; fanout single-attempt result discarded; `.custom`
 provider dead-end. Full detail in [BUGS_FOUND.md](BUGS_FOUND.md) + [PER_COMPONENT.md](PER_COMPONENT.md).
 
+## Release path — dry-run validated (Phase 5)
+`SW_DRY_RUN=1 SW_SKIP_UNIVERSAL=1 release.sh 0.7.5` ran green: build 0.7.5 → sign → DMG (10.9 MB) → **EdDSA
+signed** → stop-before-publish → Info.plist restored. The Sparkle EdDSA gate survived the +209-line release.sh
+rewrite (07-06 strength re-certified at runtime). EdDSA signing key confirmed in Keychain, pubkey matches
+Info.plist — **release signing needs no setup from Philipp beyond the Developer-ID notarization step.** One
+fragility found: the build-product glob can select a stale binary across multiple checkouts (version guard
+caught it; fix in BUGS_FOUND). Ad-hoc path shown here; the notarized path needs Phase 3 enrollment.
+
 ## Re-certified as genuinely good (evidence in PER_COMPONENT.md)
 07-06's four meeting-pipeline CRITICALs (audio-tap deepCopy, OpenRouter dual-key, cancellable post-processing +
 delete-race, crash-recovery window) · all three security HIGHs (Gemini header, Deepgram Keychain, webhook JSON) ·

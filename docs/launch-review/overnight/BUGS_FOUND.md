@@ -87,6 +87,13 @@ badge; keep a subtle indicator even when the pre-warning is suppressed. **QA §4
 - **Deprecated mic-auth API** `AVCaptureDevice.requestAccess(for:.audio)` at 4 sites — modernize. [Correctness]
 
 ## LOW / catalogued (deferred, non-blocking)
+- **Release build-product selection is ambiguous across checkouts** (found in the Phase 5 dry-run): `release.sh`
+  selects the app to package via `find …/DerivedData/SolWhisper-*/…/Release -name SolWhisper.app | newest-mtime`.
+  With more than one `SolWhisper-*` DerivedData dir (git worktree + main checkout, or Xcode leftovers) it can pick
+  a **stale binary from a different checkout** — the dry-run built 0.7.5 correctly but the glob selected a stale
+  0.7.4 and the version guard aborted. The guard prevents mis-shipping (good), but it turns a routine release into a
+  confusing abort. **Fix:** build with an explicit `-derivedDataPath ./build` and package from there, so the product
+  is deterministic. `scripts/release.sh`.
 - Integration URLs not `https`-restricted (cleartext/SSRF); MCP `generate()` ignores `SecRandomCopyBytes` return (all-zero token if RNG fails) + atomic-write-then-chmod window; `/tmp` release staging predictable (→`mktemp -d`); supply chain unpinned (no `Package.resolved`, no WhisperKit model hash pin); Deepgram `print()` noise; ConcurrencyDesign.md still describes never-built actors.
 - **Dead code (5, zero-ref):** `AppDelegate.openOnboardingFromMenu()`, `WhisperKitModelDownloader.isDownloading()`, `KeychainStore._wipeAllForTesting()`, `MCPTokenStore.regenerate()`, `OllamaClient.listModels()` — delete in Phase 6 (needs `xcodegen generate` + build verify, per plan; not moved to dead-code/ because XcodeGen would still compile a moved file).
 - **Large files (split post-launch):** `MeetingDetailView.swift` (2000), `AppDelegate.swift` (1153), `TranslateResultBubble.swift` (926), `MeetingController.swift` (888).
