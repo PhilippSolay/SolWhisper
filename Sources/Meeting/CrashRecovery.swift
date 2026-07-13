@@ -23,6 +23,12 @@ enum CrashRecovery {
         var orphans: [OrphanSession] = []
         let fm = FileManager.default
         for meeting in store.meetings {
+            // Imports are recovered separately (see `interruptedImports`). They
+            // have no chunks and the recording-recovery pipeline would
+            // transcribe absent `audio_mic.m4a` → write an empty transcript and
+            // mark the import "complete", discarding it. Never route an import
+            // through here.
+            guard meeting.source == .recording else { continue }
             let folder = store.folderURL(for: meeting)
 
             // A completed meeting always has a transcript.json (written at the
@@ -53,6 +59,38 @@ enum CrashRecovery {
             ))
         }
         return orphans
+    }
+
+    /// An import that was interrupted (crash/quit) after its audio was copied
+    /// into the meeting folder but before `transcript.json` was written. The
+    /// copied `audio.<ext>` is a complete, valid file, so recovery just
+    /// re-runs the import on it (see AppDelegate) rather than leaving a blank
+    /// meeting card that never transcribes.
+    struct InterruptedImport {
+        let meeting: Meeting
+        let audioURL: URL
+    }
+
+    /// Finds imports with copied audio but no transcript. Idempotent.
+    static func interruptedImports(in store: MeetingStore) -> [InterruptedImport] {
+        let fm = FileManager.default
+        var result: [InterruptedImport] = []
+        for meeting in store.meetings where meeting.source == .import {
+            let folder = store.folderURL(for: meeting)
+            if fm.fileExists(atPath: folder.appendingPathComponent("transcript.json").path) {
+                continue
+            }
+            // The import copy is `audio.<ext>` (mp3/m4a/wav/flac/…). Exclude the
+            // recording-pipeline artifacts (`audio_mic`/`audio_system`).
+            guard let entries = try? fm.contentsOfDirectory(at: folder,
+                                                            includingPropertiesForKeys: nil) else { continue }
+            let audio = entries.first { url in
+                let name = url.deletingPathExtension().lastPathComponent
+                return name == "audio" && url.pathExtension.lowercased() != "json"
+            }
+            if let audio { result.append(InterruptedImport(meeting: meeting, audioURL: audio)) }
+        }
+        return result
     }
 
     /// Counts `chunk-NNNN-mic.wav` files. Used as a quick "is this worth

@@ -117,4 +117,44 @@ final class CrashRecoveryTests: XCTestCase {
         XCTAssertEqual(CrashRecovery.chunkCount(at: dir), 2,
                        "Only -mic.wav chunks should be counted")
     }
+
+    // MARK: - Imports (H-3)
+
+    func testScanExcludesImportsFromRecordingRecovery() throws {
+        // An import with copied audio but no transcript must NOT be returned by
+        // scan — routing it through the recording pipeline transcribes absent
+        // audio_mic.m4a and marks the import "complete", discarding it.
+        let store = MeetingStore(rootDirectory: tempRoot)
+        let meeting = try store.create(source: .import, transcriptionBackend: "wk", folderSlug: "importM4a")
+        try Data().write(to: store.folderURL(for: meeting).appendingPathComponent("audio.m4a"))
+
+        XCTAssertTrue(CrashRecovery.scan(in: store).isEmpty,
+                      "Imports must be excluded from recording recovery")
+    }
+
+    func testInterruptedImportsFindsCopiedAudioWithoutTranscript() throws {
+        let store = MeetingStore(rootDirectory: tempRoot)
+        let meeting = try store.create(source: .import, transcriptionBackend: "wk", folderSlug: "importMp3")
+        let audio = store.folderURL(for: meeting).appendingPathComponent("audio.mp3")
+        try Data("x".utf8).write(to: audio)
+
+        let found = CrashRecovery.interruptedImports(in: store)
+        XCTAssertEqual(found.count, 1)
+        XCTAssertEqual(found.first?.audioURL.lastPathComponent, "audio.mp3")
+        XCTAssertEqual(found.first?.meeting.id, meeting.id)
+    }
+
+    func testInterruptedImportsExcludesCompletedAndRecordings() throws {
+        let store = MeetingStore(rootDirectory: tempRoot)
+        // Completed import — has transcript.
+        let done = try store.create(source: .import, transcriptionBackend: "wk", folderSlug: "importDone")
+        try Data("x".utf8).write(to: store.folderURL(for: done).appendingPathComponent("audio.wav"))
+        try Data("{}".utf8).write(to: store.folderURL(for: done).appendingPathComponent("transcript.json"))
+        // Interrupted recording — not an import.
+        let rec = try store.create(source: .recording, transcriptionBackend: "wk", folderSlug: "recNoTranscript")
+        try Data().write(to: store.folderURL(for: rec).appendingPathComponent("audio.m4a"))
+
+        XCTAssertTrue(CrashRecovery.interruptedImports(in: store).isEmpty,
+                      "Completed imports and recordings must be excluded")
+    }
 }

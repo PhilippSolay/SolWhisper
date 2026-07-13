@@ -622,6 +622,15 @@ struct MeetingDetailView: View {
                 Text("·")
                 Text(meeting.transcriptionBackend)
                     .font(.system(.caption, design: .monospaced))
+                if meeting.micOnly == true {
+                    Label("Mic only", systemImage: "mic")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.orange)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Color.orange.opacity(0.15), in: Capsule())
+                        .help("Screen Recording wasn't enabled, so only your microphone was captured — not the other participants.")
+                }
             }
             .font(.system(size: 12))
             .foregroundColor(.secondary)
