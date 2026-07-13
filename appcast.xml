@@ -3,6 +3,26 @@
   <channel>
     <title>SolWhisper Updates</title>
     <language>en</language>    <item>
+      <title>Version 0.7.3</title>
+      <pubDate>Mon, 13 Jul 2026 16:30:23 +0800</pubDate>
+      <sparkle:version>29732189</sparkle:version>
+      <sparkle:shortVersionString>0.7.3</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+## Fixed
+
+**Dictation with the Apple Speech engine works again when Siri and Dictation are turned off in macOS.** v0.7.2 started forcing on-device recognition for privacy, but on Macs where both Siri and System Settings → Keyboard → Dictation are off, macOS reports on-device support while the recognizer actually refuses to start — every dictation silently produced nothing: no paste, no history entry.
+
+SolWhisper now tries on-device first and, if the recognizer dies before producing any text, retries once through Apple's servers — replaying the audio already captured so your first words aren't lost. If Apple speech recognition is unavailable entirely, you now get a clear message with the fix (turn on Dictation in System Settings → Keyboard, or switch engines in Settings → Dictation) instead of a dictation that goes nowhere.
+
+**Privacy note:** when the server fallback kicks in, that dictation's audio is processed by Apple rather than on-device. The fallback is recorded in the debug log. To guarantee on-device Apple recognition, enable Dictation in System Settings → Keyboard (macOS then keeps the offline speech model installed) — or use the WhisperKit engine, which is always local.
+      ]]></description>
+      <enclosure url="https://github.com/PhilippSolay/SolWhisper/releases/download/v0.7.3/SolWhisper-v0.7.3.dmg"
+                 sparkle:edSignature="eLkmDZXA2ID5KnKElnGfTS4Uk0diLyr/LJwLKS8ppqW1OhEqtjsAbmoUPkwBeGwH2pi68rxrDAZtAqJC5mYMBQ=="
+                 length="11351727"
+                 type="application/octet-stream"/>
+    </item>
+    <item>
       <title>Version 0.7.2</title>
       <pubDate>Mon, 13 Jul 2026 14:38:40 +0800</pubDate>
       <sparkle:version>29732077</sparkle:version>
