@@ -186,6 +186,16 @@ class TranscriptionController: ObservableObject {
         appleClient?.onTranscript    = { [weak self] text, _ in Task { @MainActor in self?.liveTranscript = text } }
         appleClient?.onLevelUpdate   = { [weak self] level  in Task { @MainActor in self?.handleLevel(level) } }
         appleClient?.onSpectrumUpdate = { [weak self] bins  in Task { @MainActor in self?.spectrumBins = bins } }
+        // Recognizer dead before any text and out of retries (e.g. Siri +
+        // Dictation disabled system-wide) — tear the session down and surface
+        // the fix instead of leaving the pill "listening" forever.
+        appleClient?.onFatalError    = { [weak self] message in
+            Task { @MainActor in
+                guard let self, self.isRecording else { return }
+                self.cancel()
+                self.onAudioFailure?(message)
+            }
+        }
 
         do {
             try appleClient?.start()

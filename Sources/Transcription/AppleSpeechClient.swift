@@ -9,6 +9,10 @@ class AppleSpeechClient {
     var onTranscript:    ((String, Bool) -> Void)?
     var onLevelUpdate:   ((Float) -> Void)?
     var onSpectrumUpdate: (([Float]) -> Void)?
+    /// Fired when recognition is dead before producing any text and no retry
+    /// is left (e.g. Siri + Dictation disabled system-wide). The message is
+    /// user-facing; the owner should tear the session down and surface it.
+    var onFatalError:    ((String) -> Void)?
 
     private let recognizer  = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private var task:        SFSpeechRecognitionTask?
@@ -23,6 +27,24 @@ class AppleSpeechClient {
     /// recognizer. The pill UI's pause hotkey flips this; resuming continues
     /// transcription on the existing task without restarting.
     var isPaused = false
+
+    // On-device fallback state. `supportsOnDeviceRecognition` reports model
+    // capability, NOT asset presence — with Siri + Dictation off, a forced
+    // on-device request dies instantly with kAFAssistantErrorDomain 1700
+    // ("Siri and Dictation are disabled"). When that happens before any result,
+    // we retry once via Apple's servers, replaying the audio captured so far.
+    private var usedOnDevice   = false
+    private var didServerRetry = false
+    private var sawResult      = false
+    private var isTearingDown  = false
+
+    // Early-audio stash for the retry replay. Written from the audio tap
+    // thread, drained on main — guarded by `stashLock`. Capped so a session
+    // that never errors doesn't accumulate forever (cleared on first result).
+    private let stashLock = NSLock()
+    private var stashedBuffers: [AVAudioPCMBuffer] = []
+    private var isStashing = true
+    private static let maxStashedBuffers = 512   // ~12 s of 1024-frame taps
 
     // FFT state
     private let fftSize = 1024
@@ -51,8 +73,16 @@ class AppleSpeechClient {
         }
 
         watch = Stopwatch()
-        firstLogged = false
-        latestText  = ""
+        firstLogged    = false
+        latestText     = ""
+        usedOnDevice   = recognizer.supportsOnDeviceRecognition
+        didServerRetry = false
+        sawResult      = false
+        isTearingDown  = false
+        stashLock.lock()
+        stashedBuffers = []
+        isStashing     = true
+        stashLock.unlock()
 
         // Setup FFT
         fftSetup = vDSP_DFT_zop_CreateSetup(nil, vDSP_Length(fftSize), .FORWARD)
@@ -60,19 +90,19 @@ class AppleSpeechClient {
         vDSP_hann_window(&fftWindow, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
         fftAccum = [Float](repeating: 0, count: AudioEngine.fftBinCount)
 
+        let mode = usedOnDevice ? "on-device" : "server"
         Task { @MainActor in
-            DebugLog.shared.log(icon: "🍎", label: "Apple Speech starting", value: "on-device · en-US")
+            DebugLog.shared.log(icon: "🍎", label: "Apple Speech starting", value: "\(mode) · en-US")
         }
 
-        let req = SFSpeechAudioBufferRecognitionRequest()
-        req.shouldReportPartialResults = true
-        if #available(macOS 13, *) { req.addsPunctuation = true }
-        // Force on-device recognition when the model supports it so audio never
+        // Prefer on-device recognition when the model supports it so audio never
         // leaves the Mac — matching the onboarding/Info.plist privacy promise.
-        if recognizer.supportsOnDeviceRecognition {
-            req.requiresOnDeviceRecognition = true
-        }
+        // If the on-device path fails before producing anything, handleResult
+        // retries once via Apple's servers rather than dictating into the void.
+        let req = makeRequest(onDevice: usedOnDevice)
+        stashLock.lock()
         request = req
+        stashLock.unlock()
 
         task = recognizer.recognitionTask(with: req) { [weak self] result, error in
             self?.handleResult(result, error: error)
@@ -96,7 +126,14 @@ class AppleSpeechClient {
             // but receives no new audio, so the live transcript stays frozen
             // at the last partial.
             if self.isPaused { return }
-            self.request?.append(buf)
+            // Snapshot under the lock: retryViaServer swaps `request` from the
+            // main thread mid-session; an unsynchronized read here could use a
+            // deallocating object.
+            self.stashLock.lock()
+            let req = self.request
+            self.stashLock.unlock()
+            req?.append(buf)
+            self.stashForReplay(buf)
             self.emitLevel(buf)
             self.emitSpectrum(buf)
             // Log first buffer to confirm mic is delivering audio
@@ -154,9 +191,18 @@ class AppleSpeechClient {
 
     private func handleResult(_ result: SFSpeechRecognitionResult?, error: Error?) {
         if let error {
-            Task { @MainActor in
-                DebugLog.shared.log(icon: "🍎", label: "Apple Speech error",
-                                    value: error.localizedDescription, ok: false)
+            let nsError = error as NSError
+            // Hop to main before touching state — `isTearingDown` and the
+            // recovery path are main-thread-owned; this callback isn't.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if !self.isTearingDown {
+                    Task { @MainActor in
+                        DebugLog.shared.log(icon: "🍎", label: "Apple Speech error",
+                                            value: nsError.localizedDescription, ok: false)
+                    }
+                }
+                self.recoverFromEarlyFailure(nsError)
             }
         }
         guard let result else { return }
@@ -166,6 +212,15 @@ class AppleSpeechClient {
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+
+            if !self.sawResult {
+                // Recognition is alive — the retry stash is no longer needed.
+                self.sawResult = true
+                self.stashLock.lock()
+                self.isStashing = false
+                self.stashedBuffers = []
+                self.stashLock.unlock()
+            }
 
             if !self.firstLogged && !text.isEmpty {
                 self.firstLogged = true
@@ -195,7 +250,107 @@ class AppleSpeechClient {
         }
     }
 
+    /// Recognizer died before producing any text. First option: if we forced
+    /// on-device, retry once via Apple's servers (replaying the stashed audio).
+    /// Out of retries + an availability error (Siri/Dictation disabled, asset
+    /// missing): surface an actionable message so the pill doesn't sit
+    /// "listening" against a dead recognizer. Runs on main.
+    private func recoverFromEarlyFailure(_ error: NSError) {
+        guard !isTearingDown, !sawResult, finalCB == nil else { return }
+
+        if usedOnDevice, !didServerRetry {
+            didServerRetry = true
+            retryViaServer()
+            return
+        }
+
+        guard Self.isAvailabilityError(error) else { return }
+        tearDown()
+        onFatalError?("Apple speech recognition is unavailable. Turn on Dictation in System Settings → Keyboard, or switch engines in SolWhisper Settings → Dictation.")
+    }
+
+    /// Swaps the failed on-device request for a server-based one on the same
+    /// running engine. Audio captured so far is replayed into the new request
+    /// before it goes live, so the first words aren't lost.
+    private func retryViaServer() {
+        guard let recognizer, recognizer.isAvailable else {
+            tearDown()
+            onFatalError?("Apple speech recognition is unavailable. Turn on Dictation in System Settings → Keyboard, or switch engines in SolWhisper Settings → Dictation.")
+            return
+        }
+        Task { @MainActor in
+            DebugLog.shared.log(icon: "🍎", label: "On-device speech failed — retrying via Apple servers",
+                                ok: false)
+        }
+        usedOnDevice = false
+        task?.cancel()
+
+        // Replay + swap inside one critical section: the tap is blocked while
+        // we backfill, so live buffers can't interleave ahead of the replayed
+        // audio, and the tap never reads a half-swapped `request`. The stash is
+        // tiny at this point (~10 buffers — the error fires ~200 ms in).
+        let req = makeRequest(onDevice: false)
+        stashLock.lock()
+        stashedBuffers.forEach { req.append($0) }
+        stashedBuffers = []
+        request = req
+        stashLock.unlock()
+
+        task = recognizer.recognitionTask(with: req) { [weak self] result, error in
+            self?.handleResult(result, error: error)
+        }
+    }
+
+    private func makeRequest(onDevice: Bool) -> SFSpeechAudioBufferRecognitionRequest {
+        let req = SFSpeechAudioBufferRecognitionRequest()
+        req.shouldReportPartialResults = true
+        if #available(macOS 13, *) { req.addsPunctuation = true }
+        if onDevice { req.requiresOnDeviceRecognition = true }
+        return req
+    }
+
+    /// Copies tap buffers while a retry might still need them — the engine
+    /// reuses the tap's buffer, so a reference alone would be overwritten.
+    /// Called from the audio thread.
+    private func stashForReplay(_ buf: AVAudioPCMBuffer) {
+        stashLock.lock()
+        defer { stashLock.unlock() }
+        guard isStashing, stashedBuffers.count < Self.maxStashedBuffers,
+              let copy = Self.copyBuffer(buf) else { return }
+        stashedBuffers.append(copy)
+    }
+
+    private static func copyBuffer(_ buf: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard buf.frameLength > 0,
+              let src = buf.floatChannelData,
+              let copy = AVAudioPCMBuffer(pcmFormat: buf.format, frameCapacity: buf.frameLength),
+              let dst = copy.floatChannelData else { return nil }
+        copy.frameLength = buf.frameLength
+        let bytes = Int(buf.frameLength) * MemoryLayout<Float>.size
+        for ch in 0..<Int(buf.format.channelCount) {
+            memcpy(dst[ch], src[ch], bytes)
+        }
+        return copy
+    }
+
+    /// kAFAssistantErrorDomain: 1700/1701 = "Siri and Dictation are disabled",
+    /// 1100/1101 = on-device asset unavailable. These mean recognition cannot
+    /// work until the user changes a system setting — worth surfacing, unlike
+    /// transient errors ("No speech detected", cancellations).
+    static func isAvailabilityError(_ error: NSError) -> Bool {
+        error.domain == "kAFAssistantErrorDomain"
+            && [1100, 1101, 1700, 1701].contains(error.code)
+    }
+
     private func tearDown() {
+        isTearingDown = true
+        // `request` cleared under the lock too: an in-flight tap callback can
+        // still be executing after removeTap returns.
+        stashLock.lock()
+        isStashing = false
+        stashedBuffers = []
+        request = nil
+        stashLock.unlock()
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         // Force the HAL audio unit to release the device so the macOS
@@ -204,7 +359,6 @@ class AppleSpeechClient {
         PreferredInputDevice.releaseInputNode(engine)
         task?.cancel()
         task     = nil
-        request  = nil
         // vDSP setup is a Core Foundation-managed handle — nilling the Swift
         // var is not enough; the backing buffers need an explicit destroy.
         // WhisperKitClient + MeetingAudioEngine.SpectrumComputer already do
