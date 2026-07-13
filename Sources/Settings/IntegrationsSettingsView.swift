@@ -218,9 +218,11 @@ private struct WebhookRow: View {
             Button(action: onEdit) {
                 Image(systemName: "pencil").font(.system(size: 12))
             }.buttonStyle(.plain)
+            .accessibilityLabel("Edit webhook")
             Button(role: .destructive, action: onDelete) {
                 Image(systemName: "trash").font(.system(size: 12))
             }.buttonStyle(.plain)
+            .accessibilityLabel("Delete webhook")
         }
     }
 }

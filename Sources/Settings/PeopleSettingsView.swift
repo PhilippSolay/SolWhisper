@@ -37,7 +37,7 @@ struct PeopleSettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(calendarStatusLabel)
                             .font(.system(size: 13, weight: .medium))
-                        Text("When granted, attendees from calendar events near each meeting's start time become rename suggestions and feed the LLM speaker matcher.")
+                        Text("When granted, attendees from calendar events near each meeting's start time become rename suggestions and feed the AI model speaker matcher.")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
@@ -86,6 +86,7 @@ struct PeopleSettingsView: View {
                                     .font(.system(size: 12))
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel("Delete voice profile")
                         }
                         .padding(.vertical, 2)
                     }

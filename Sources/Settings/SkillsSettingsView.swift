@@ -69,6 +69,7 @@ struct SkillsSettingsView: View {
                             }
                             .buttonStyle(.plain)
                             .help("Edit")
+                            .accessibilityLabel("Edit skill")
                             Button(role: .destructive) {
                                 deleteConfirmTarget = skill
                             } label: {
@@ -77,6 +78,7 @@ struct SkillsSettingsView: View {
                             }
                             .buttonStyle(.plain)
                             .help("Delete")
+                            .accessibilityLabel("Delete skill")
                         }
                         .padding(.vertical, 2)
                     }

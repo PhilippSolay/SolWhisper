@@ -36,7 +36,16 @@ final class AdditiveClipboard {
             final = text
         }
 
+        // Privacy: mark concealed + transient so appended dictation text does NOT
+        // transit Handoff / Universal Clipboard to the user's other devices, and
+        // clipboard managers skip storing it. (Full save/restore of the user's
+        // prior clipboard is deferred — needs runtime testing.)
         pb.clearContents()
+        pb.declareTypes(
+            [.string,
+             NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"),
+             NSPasteboard.PasteboardType("com.apple.is-transient")],
+            owner: nil)
         pb.setString(final, forType: .string)
         ownedChangeCount = pb.changeCount
 

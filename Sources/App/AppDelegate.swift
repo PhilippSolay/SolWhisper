@@ -3,6 +3,7 @@ import AVFoundation
 import Combine
 import SwiftUI
 import Sparkle
+import UserNotifications
 
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -939,9 +940,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func presentImportReport(_ report: ImportQueue.BatchReport) {
         let total = report.succeeded.count + report.failed.count + report.cancelled.count
         guard total > 0 else { return }
+        // A long import the user walked away from ("dropped a 2-hour file, went
+        // to lunch") otherwise finishes silently — a lone success shows no
+        // alert. Fire a notification so it surfaces even when the Transcripts
+        // window isn't frontmost.
+        Self.postImportCompletionNotification(report)
         DispatchQueue.main.async { [weak self] in
             self?.showImportReport(report, total: total)
         }
+    }
+
+    private static func postImportCompletionNotification(_ report: ImportQueue.BatchReport) {
+        let n = report.succeeded.count
+        guard n > 0 else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Import finished"
+        content.body = n == 1
+            ? "Finished transcribing \(report.succeeded.first ?? "your file")."
+            : "Finished importing \(n) files."
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
     }
 
     private func showImportReport(_ report: ImportQueue.BatchReport, total: Int) {
@@ -990,8 +1008,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: - Onboarding
-
-    @objc func openOnboardingFromMenu() { openOnboarding() }
 
     /// Triggers a manual Sparkle update check from the About pane button.
     func checkForUpdatesNow() {

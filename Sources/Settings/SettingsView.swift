@@ -190,7 +190,7 @@ struct TranscriptionSettingsView: View {
                     Toggle("Fix grammar",                     isOn: $fixGrammar)
                 }
             } header: { Text("AI Polish") } footer: {
-                Text("Cleans up the raw transcript via the LLM picked in Models → Routing. Less cleanup = closer to your original words.")
+                Text("Cleans up the raw transcript via the AI model picked in Models → Routing. Less cleanup = closer to your original words.")
                     .font(.caption).foregroundColor(.secondary)
             }
         }

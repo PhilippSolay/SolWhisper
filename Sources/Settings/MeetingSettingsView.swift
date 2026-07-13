@@ -54,7 +54,7 @@ struct MeetingSettingsView: View {
                 Toggle("Auto-send to integrations after summary", isOn: $autoIntegrate)
                     .disabled(!autoSummarize)
             } header: { Text("Auto-pipeline (after stop)") } footer: {
-                Text("Each toggle is independent. The pipeline runs in order: Clean → Diarize → Summarize → Integrations. Skipping a step (e.g. Auto-clean off) just hands the unmodified transcript to the next step.")
+                Text("Each toggle is independent. The pipeline runs in order: Clean → Label speakers → Summarize → Integrations. Skipping a step (e.g. Auto-clean off) just hands the unmodified transcript to the next step.")
                     .font(.caption).foregroundColor(.secondary)
             }
 

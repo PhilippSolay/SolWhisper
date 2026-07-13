@@ -48,7 +48,16 @@ enum PasteManager {
         // changeCount it captured being preserved).
         let pb = NSPasteboard.general
         if pb.string(forType: .string) != text {
+            // Privacy: mark this write concealed + transient so dictated text
+            // does NOT transit Handoff / Universal Clipboard to the user's other
+            // devices, and clipboard managers skip storing it. (Full save/restore
+            // of the user's prior clipboard is deferred — needs runtime testing.)
             pb.clearContents()
+            pb.declareTypes(
+                [.string,
+                 NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"),
+                 NSPasteboard.PasteboardType("com.apple.is-transient")],
+                owner: nil)
             pb.setString(text, forType: .string)
         }
 
