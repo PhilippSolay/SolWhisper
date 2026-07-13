@@ -447,7 +447,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
               let data = try? Data(contentsOf: url),
               let secrets = try? JSONDecoder().decode([String: String].self, from: data) else { return }
 
-        let keychainKeys: Set<String> = [SecretsStore.Keys.openRouterApiKey]
+        // Route every Keychain-backed secret to the Keychain, not just
+        // openRouter — otherwise a seeded key (e.g. Deepgram) lands in
+        // plaintext UserDefaults. Sourced from the migration list so new
+        // secrets are covered automatically.
+        let keychainKeys = Set(SecretsStore.Keys.migratable)
 
         for (key, value) in secrets where !value.isEmpty {
             if keychainKeys.contains(key) {
