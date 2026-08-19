@@ -49,7 +49,10 @@ class DeepgramClient: NSObject {
 
     func connect() {
         guard !apiKey.isEmpty else {
-            print("Deepgram: no API key — open Settings.")
+            Task { @MainActor in
+                DebugLog.shared.log(icon: "🎙", label: "Deepgram",
+                                    value: "no API key — open Settings", ok: false)
+            }
             return
         }
 
@@ -75,7 +78,12 @@ class DeepgramClient: NSObject {
     func send(audioData: Data) {
         bytesSent += audioData.count
         webSocket?.send(.data(audioData)) { error in
-            if let error { print("Deepgram send error: \(error)") }
+            if let error {
+                Task { @MainActor in
+                    DebugLog.shared.log(icon: "🎙", label: "Deepgram send error",
+                                        value: "\(error)", ok: false)
+                }
+            }
         }
     }
 
@@ -138,7 +146,10 @@ class DeepgramClient: NSObject {
                 }
                 self.receiveLoop()
             case .failure(let error):
-                print("Deepgram receive error: \(error)")
+                Task { @MainActor in
+                    DebugLog.shared.log(icon: "🎙", label: "Deepgram receive error",
+                                        value: "\(error)", ok: false)
+                }
                 if let cb = self.consumeCloseCompletion() {
                     let text = self.accumulatedTranscript.trimmingCharacters(in: .whitespaces)
                     let ms = self.connectWatch?.elapsed

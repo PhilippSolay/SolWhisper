@@ -117,4 +117,90 @@ final class CrashRecoveryTests: XCTestCase {
         XCTAssertEqual(CrashRecovery.chunkCount(at: dir), 2,
                        "Only -mic.wav chunks should be counted")
     }
+
+    // MARK: - Imports (H-3)
+
+    func testScanExcludesImportsFromRecordingRecovery() throws {
+        // An import with copied audio but no transcript must NOT be returned by
+        // scan — routing it through the recording pipeline transcribes absent
+        // audio_mic.m4a and marks the import "complete", discarding it.
+        let store = MeetingStore(rootDirectory: tempRoot)
+        let meeting = try store.create(source: .import, transcriptionBackend: "wk", folderSlug: "importM4a")
+        try Data().write(to: store.folderURL(for: meeting).appendingPathComponent("audio.m4a"))
+
+        XCTAssertTrue(CrashRecovery.scan(in: store).isEmpty,
+                      "Imports must be excluded from recording recovery")
+    }
+
+    func testInterruptedImportsFindsCopiedAudioWithoutTranscript() throws {
+        let store = MeetingStore(rootDirectory: tempRoot)
+        let meeting = try store.create(source: .import, transcriptionBackend: "wk", folderSlug: "importMp3")
+        let audio = store.folderURL(for: meeting).appendingPathComponent("audio.mp3")
+        try Data("x".utf8).write(to: audio)
+
+        let found = CrashRecovery.interruptedImports(in: store)
+        XCTAssertEqual(found.count, 1)
+        XCTAssertEqual(found.first?.audioURL.lastPathComponent, "audio.mp3")
+        XCTAssertEqual(found.first?.meeting.id, meeting.id)
+    }
+
+    func testInterruptedImportsExcludesCompletedAndRecordings() throws {
+        let store = MeetingStore(rootDirectory: tempRoot)
+        // Completed import — has transcript.
+        let done = try store.create(source: .import, transcriptionBackend: "wk", folderSlug: "importDone")
+        try Data("x".utf8).write(to: store.folderURL(for: done).appendingPathComponent("audio.wav"))
+        try Data("{}".utf8).write(to: store.folderURL(for: done).appendingPathComponent("transcript.json"))
+        // Interrupted recording — not an import.
+        let rec = try store.create(source: .recording, transcriptionBackend: "wk", folderSlug: "recNoTranscript")
+        try Data().write(to: store.folderURL(for: rec).appendingPathComponent("audio.m4a"))
+
+        XCTAssertTrue(CrashRecovery.interruptedImports(in: store).isEmpty,
+                      "Completed imports and recordings must be excluded")
+    }
+
+    // MARK: - Incomplete post-processing (crash after transcript, before summary)
+
+    func testIncompletePostProcessingFlagsTranscriptWithoutMarker() throws {
+        // Crash after transcript.json (step 2 of MeetingPostProcessor.run) but
+        // before the completion marker → the post-transcript stages were dropped.
+        let store = MeetingStore(rootDirectory: tempRoot)
+        let meeting = try store.create(source: .recording, transcriptionBackend: "wk", folderSlug: "midPost")
+        try Data("{}".utf8).write(
+            to: store.folderURL(for: meeting).appendingPathComponent("transcript.json"))
+
+        let found = CrashRecovery.incompletePostProcessing(in: store)
+        XCTAssertEqual(found.count, 1)
+        XCTAssertEqual(found.first?.meeting.id, meeting.id)
+    }
+
+    func testIncompletePostProcessingIgnoresFullyCompletedMeeting() throws {
+        let store = MeetingStore(rootDirectory: tempRoot)
+        let meeting = try store.create(source: .recording, transcriptionBackend: "wk", folderSlug: "fullDone")
+        let folder = store.folderURL(for: meeting)
+        try Data("{}".utf8).write(to: folder.appendingPathComponent("transcript.json"))
+        try Data().write(to: folder.appendingPathComponent(MeetingPostProcessor.completionMarkerFilename))
+
+        XCTAssertTrue(CrashRecovery.incompletePostProcessing(in: store).isEmpty,
+                      "transcript + marker present → fully processed, not a candidate")
+    }
+
+    func testIncompletePostProcessingIgnoresMeetingWithoutTranscript() throws {
+        // No transcript yet → that's scan()'s job (re-transcribe), not this path.
+        let store = MeetingStore(rootDirectory: tempRoot)
+        let meeting = try store.create(source: .recording, transcriptionBackend: "wk", folderSlug: "noTranscript")
+        try Data().write(to: store.folderURL(for: meeting).appendingPathComponent("audio.m4a"))
+
+        XCTAssertTrue(CrashRecovery.incompletePostProcessing(in: store).isEmpty)
+    }
+
+    func testIncompletePostProcessingExcludesImports() throws {
+        // Imports resume via interruptedImports(), never this recording-only path.
+        let store = MeetingStore(rootDirectory: tempRoot)
+        let meeting = try store.create(source: .import, transcriptionBackend: "wk", folderSlug: "importMid")
+        try Data("{}".utf8).write(
+            to: store.folderURL(for: meeting).appendingPathComponent("transcript.json"))
+
+        XCTAssertTrue(CrashRecovery.incompletePostProcessing(in: store).isEmpty,
+                      "imports are excluded from recording post-processing recovery")
+    }
 }

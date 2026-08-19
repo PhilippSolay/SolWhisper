@@ -23,6 +23,21 @@ enum PasteManager {
     /// the failure isn't silent (the top "I dictated and nothing happened" case).
     @MainActor static var onClipboardFallback: (() -> Void)?
 
+    // MARK: - Focus guard
+
+    /// Pure decision (unit-testable): must we abort the keystroke-based paste?
+    ///
+    /// Methods A/B/C send Cmd-V to whatever app is *frontmost* right now (via
+    /// System Events or the system-wide focused element), not to a specific pid.
+    /// If another app stole focus after we activated `target`, firing them would
+    /// paste dictated text into the wrong app (Slack / browser / terminal). When
+    /// the frontmost pid no longer matches the target — including when there is
+    /// no frontmost app at all (nil) — we abort and leave the text on the
+    /// clipboard for a manual ⌘V.
+    static func shouldAbortPaste(frontmostPID: pid_t?, targetPID: pid_t) -> Bool {
+        frontmostPID != targetPID
+    }
+
     // MARK: - Paste
 
     @MainActor
@@ -33,7 +48,16 @@ enum PasteManager {
         // changeCount it captured being preserved).
         let pb = NSPasteboard.general
         if pb.string(forType: .string) != text {
+            // Privacy: mark this write concealed + transient so dictated text
+            // does NOT transit Handoff / Universal Clipboard to the user's other
+            // devices, and clipboard managers skip storing it. (Full save/restore
+            // of the user's prior clipboard is deferred — needs runtime testing.)
             pb.clearContents()
+            pb.declareTypes(
+                [.string,
+                 NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"),
+                 NSPasteboard.PasteboardType("com.apple.is-transient")],
+                owner: nil)
             pb.setString(text, forType: .string)
         }
 
@@ -63,6 +87,29 @@ enum PasteManager {
 
         // 3. Stabilize — let text field regain focus
         try? await Task.sleep(nanoseconds: 150_000_000)
+
+        // 3a. Re-verify focus AFTER stabilizing (the check at step 2 ran before
+        // this sleep, during which another app can steal focus). Methods A/B/C
+        // key Cmd-V into whatever is frontmost now — pasting into the wrong app
+        // would leak dictated text. Best-effort recovery: re-activate the target
+        // and retry once; only if it still won't come forward do we leave the
+        // text on the clipboard rather than paste blind.
+        var frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        if shouldAbortPaste(frontmostPID: frontPID, targetPID: target.processIdentifier) {
+            target.activate(options: .activateIgnoringOtherApps)
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        }
+        if shouldAbortPaste(frontmostPID: frontPID, targetPID: target.processIdentifier) {
+            onClipboardFallback?()
+            let frontDesc = frontPID.map { "\($0)" } ?? "nil"
+            DebugLog.shared.log(
+                icon: "📋", label: "Paste aborted",
+                value: "target won't focus (front=\(frontDesc) target=\(target.processIdentifier)) "
+                     + "— text on clipboard, press ⌘V",
+                ok: false)
+            return
+        }
 
         // 4. Try paste methods in order of reliability
 

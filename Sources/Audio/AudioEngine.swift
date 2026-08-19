@@ -27,10 +27,11 @@ class AudioEngine {
     private let compThreshold: Float = 0.5
     private let compRatio:     Float = 4.0
 
-    // FFT state — accessed from audio thread, protected by fftQueue
+    // FFT state — created in start(), read on the audio-tap thread, destroyed
+    // only in deinit (never in stop) so an in-flight vDSP_DFT_Execute can't race
+    // the destroy. Mirrors MeetingAudioEngine.SpectrumComputer.
     static let fftBinCount = 32
     private let fftSize = 1024
-    private let fftQueue = DispatchQueue(label: "solwhisper.fft", qos: .userInteractive)
     private var fftSetup: vDSP_DFT_Setup?
     private var fftWindow = [Float]()
     private var fftAccum  = [Float](repeating: 0, count: 32)
@@ -78,17 +79,25 @@ class AudioEngine {
         engine.detach(mixer)
         converter = nil
         agcGain   = 1.0
-        // vDSP setup is a Core Foundation-managed handle — nilling the Swift
-        // var is not enough, the backing buffers need an explicit destroy
-        // call. WhisperKitClient + MeetingAudioEngine.SpectrumComputer do
-        // the same; missing this here leaked ~1 KB per recording session.
-        if let setup = fftSetup { vDSP_DFT_DestroySetup(setup) }
-        fftSetup  = nil
+        // NOTE: the vDSP_DFT_Setup is deliberately NOT destroyed here. stop()
+        // runs on the main thread, but computeSpectrum() calls vDSP_DFT_Execute
+        // on the audio-tap thread and a tap callback can still be in flight
+        // after removeTap returns — destroying here would free its buffers out
+        // from under an in-flight execute. Destroyed in deinit instead.
         onLevelUpdate?(0)
         onSpectrumUpdate?([Float](repeating: 0, count: Self.fftBinCount))
     }
 
-    deinit { stop() }
+    deinit {
+        stop()
+        // Destroy the vDSP handle only now: by deinit the instance is
+        // unreferenced (TranscriptionController allocates a fresh AudioEngine
+        // per session), so no tap callback can still be executing an FFT. The
+        // CF-managed handle needs an explicit destroy — nilling the Swift var
+        // alone leaks ~1 KB/session. Mirrors MeetingAudioEngine.SpectrumComputer.
+        if let setup = fftSetup { vDSP_DFT_DestroySetup(setup) }
+        fftSetup = nil
+    }
 
     // MARK: - Buffer processing
 

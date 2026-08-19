@@ -23,6 +23,12 @@ enum CrashRecovery {
         var orphans: [OrphanSession] = []
         let fm = FileManager.default
         for meeting in store.meetings {
+            // Imports are recovered separately (see `interruptedImports`). They
+            // have no chunks and the recording-recovery pipeline would
+            // transcribe absent `audio_mic.m4a` → write an empty transcript and
+            // mark the import "complete", discarding it. Never route an import
+            // through here.
+            guard meeting.source == .recording else { continue }
             let folder = store.folderURL(for: meeting)
 
             // A completed meeting always has a transcript.json (written at the
@@ -53,6 +59,80 @@ enum CrashRecovery {
             ))
         }
         return orphans
+    }
+
+    /// An import that was interrupted (crash/quit) after its audio was copied
+    /// into the meeting folder but before `transcript.json` was written. The
+    /// copied `audio.<ext>` is a complete, valid file, so recovery just
+    /// re-runs the import on it (see AppDelegate) rather than leaving a blank
+    /// meeting card that never transcribes.
+    struct InterruptedImport {
+        let meeting: Meeting
+        let audioURL: URL
+    }
+
+    /// Finds imports with copied audio but no transcript. Idempotent.
+    static func interruptedImports(in store: MeetingStore) -> [InterruptedImport] {
+        let fm = FileManager.default
+        var result: [InterruptedImport] = []
+        for meeting in store.meetings where meeting.source == .import {
+            let folder = store.folderURL(for: meeting)
+            if fm.fileExists(atPath: folder.appendingPathComponent("transcript.json").path) {
+                continue
+            }
+            // The import copy is `audio.<ext>` (mp3/m4a/wav/flac/…). Exclude the
+            // recording-pipeline artifacts (`audio_mic`/`audio_system`).
+            guard let entries = try? fm.contentsOfDirectory(at: folder,
+                                                            includingPropertiesForKeys: nil) else { continue }
+            let audio = entries.first { url in
+                let name = url.deletingPathExtension().lastPathComponent
+                return name == "audio" && url.pathExtension.lowercased() != "json"
+            }
+            if let audio { result.append(InterruptedImport(meeting: meeting, audioURL: audio)) }
+        }
+        return result
+    }
+
+    /// A recording whose transcript was written but whose post-processing
+    /// (clean/diarize/summarize/integrate) never finished — the app crashed or
+    /// was force-quit after `transcript.json` (step 2 of `MeetingPostProcessor.run`)
+    /// but before the run wrote its completion marker.
+    struct IncompletePostProcessing {
+        let meeting: Meeting
+    }
+
+    /// Recording meetings that have `transcript.json` but no post-processing
+    /// completion marker (`MeetingPostProcessor.completionMarkerFilename`).
+    /// These crashed mid-post-processing and silently dropped the later stages;
+    /// `scan` deliberately skips them (transcript present = "don't re-transcribe"),
+    /// so without this helper the dropped stages are invisible. Idempotent.
+    ///
+    /// SCOPING / NOT-YET-WIRED: turning this into a user-facing *resume* action
+    /// (re-run the post-transcript stages on the already-written transcript,
+    /// WITHOUT re-transcribing) lives in AppDelegate + MeetingController and needs
+    /// runtime verification — neither is touched here. This helper makes the
+    /// dropped-stages state *detectable* rather than silent. Two guards a caller
+    /// MUST add before auto-resuming:
+    ///   1. LEGACY BACKFILL — meetings completed *before* markers existed also
+    ///      lack the marker. A one-time migration (write a marker for every
+    ///      existing `transcript.json` on first launch of the marker-aware build)
+    ///      is required, else every old meeting is falsely flagged.
+    ///   2. Re-running integrations re-sends webhooks; a resume should gate the
+    ///      integrate stage on idempotency (or skip it) to avoid duplicate fanout.
+    static func incompletePostProcessing(in store: MeetingStore) -> [IncompletePostProcessing] {
+        let fm = FileManager.default
+        var result: [IncompletePostProcessing] = []
+        for meeting in store.meetings where meeting.source == .recording {
+            let folder = store.folderURL(for: meeting)
+            let hasTranscript = fm.fileExists(
+                atPath: folder.appendingPathComponent("transcript.json").path)
+            let hasMarker = fm.fileExists(
+                atPath: folder.appendingPathComponent(MeetingPostProcessor.completionMarkerFilename).path)
+            if hasTranscript && !hasMarker {
+                result.append(IncompletePostProcessing(meeting: meeting))
+            }
+        }
+        return result
     }
 
     /// Counts `chunk-NNNN-mic.wav` files. Used as a quick "is this worth

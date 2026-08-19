@@ -86,6 +86,12 @@ final class MeetingController: ObservableObject {
     private let store: MeetingStore
     private var engine: MeetingAudioEngine?
     private var writer: ChunkWriter?
+    /// Set when `bootstrapWriter` couldn't create the on-disk ChunkWriter
+    /// (disk full, permissions). The recording is unsalvageable — captured
+    /// audio was never persisted — so `stopInternal` must surface the failure
+    /// and discard the empty meeting instead of writing an empty transcript
+    /// that marks it "complete" and hides it from recovery.
+    private var writerBootstrapFailed = false
     private var meeting: Meeting?
     private var startedAt: Date?
     private var elapsedTimer: Timer?
@@ -195,7 +201,7 @@ final class MeetingController: ObservableObject {
 
         // Create the meeting folder.
         let slug = "meeting-\(MeetingController.timeSlug(Date()))"
-        let meeting: Meeting
+        var meeting: Meeting
         do {
             meeting = try store.create(
                 source: .recording,
@@ -209,6 +215,13 @@ final class MeetingController: ObservableObject {
             state = .idle
             return
         }
+        // Record whether the other participants' audio is being captured, so
+        // the detail view can badge a one-sided recording.
+        if !hasScreen {
+            meeting.micOnly = true
+            try? store.update(meeting)
+        }
+        writerBootstrapFailed = false
         self.meeting = meeting
 
         let engine = MeetingAudioEngine()
@@ -342,6 +355,7 @@ final class MeetingController: ObservableObject {
         } catch {
             DebugLog.shared.log(icon: "🧱", label: "ChunkWriter init failed",
                                 value: "\(error)", ok: false)
+            self.writerBootstrapFailed = true
         }
     }
 
@@ -361,6 +375,25 @@ final class MeetingController: ObservableObject {
 
         await engine?.stop()
         engine = nil
+
+        // The on-disk writer never came up (disk full / permissions), so the
+        // captured audio was never persisted — there is nothing to process.
+        // Surface it and discard the empty meeting rather than letting
+        // post-processing write an empty transcript that marks it "complete"
+        // and hides it from crash recovery.
+        if writerBootstrapFailed {
+            writerBootstrapFailed = false
+            try? store.delete(meeting)
+            self.meeting = nil
+            self.writer = nil
+            state = .idle
+            let alert = NSAlert()
+            alert.messageText = "Couldn't save this recording"
+            alert.informativeText = "SolWhisper couldn't write the audio to disk — this usually means the disk is full or the recordings folder isn't writable. The recording wasn't saved. Free up space or check the folder, then try again."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
 
         if let writer { await writer.finalize() }
 

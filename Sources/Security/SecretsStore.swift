@@ -9,6 +9,11 @@ import SwiftUI
 @MainActor
 final class SecretsStore: ObservableObject {
 
+    /// Set when the most recent Keychain write failed, so the UI can surface it --
+    /// a user who "saved" a key must not believe it persisted when it didn't.
+    /// Cleared on the next successful write.
+    @Published var lastWriteError: String?
+
     @Published var openRouterApiKey: String {
         didSet { writeThrough(openRouterApiKey, oldValue: oldValue, key: Keys.openRouterApiKey) }
     }
@@ -34,9 +39,11 @@ final class SecretsStore: ObservableObject {
         guard oldValue != value else { return }
         do {
             try KeychainStore.set(value, forKey: key)
+            lastWriteError = nil
         } catch {
+            lastWriteError = "Couldn't save \(key) to the Keychain: \(error.localizedDescription)"
             Task { @MainActor in
-                DebugLog.shared.log(icon: "🔐", label: "Keychain write failed",
+                DebugLog.shared.log(icon: "🔐", label: "Keychain write FAILED",
                                     value: "\(key): \(error)", ok: false)
             }
         }

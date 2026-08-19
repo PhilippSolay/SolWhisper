@@ -25,10 +25,6 @@ final class WhisperKitModelDownloader: ObservableObject {
 
     private var tasks: [String: Task<Void, Never>] = [:]
 
-    func isDownloading(_ model: String) -> Bool {
-        progress[model] != nil
-    }
-
     /// Starts downloading `model` unless one is already in flight — both
     /// settings pickers share this object, so double-clicks and
     /// dictation/meetings overlap dedupe here instead of racing the same

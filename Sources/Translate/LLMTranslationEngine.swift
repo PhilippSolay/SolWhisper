@@ -16,6 +16,13 @@ struct LLMTranslationEngine {
     /// wallet). 4000 chars ≈ 1000 tokens, comfortably fits Haiku/Flash budgets.
     static let inputCharLimit: Int = 4_000
 
+    /// Pre-resolved client, injected for tests. When nil (production),
+    /// `translate` resolves `LLMResolver.resolve(.translation)` itself. Mirrors
+    /// the `KirosTaskExtractor` injectable-client pattern so prompt assembly,
+    /// `postProcess` quote-stripping, and the empty-response guard are testable
+    /// without touching UserDefaults / Keychain / a live provider.
+    var resolvedClient: LLMResolver.Resolved? = nil
+
     enum EngineError: Error, LocalizedError {
         case unresolvedRole
         case empty
@@ -50,7 +57,12 @@ struct LLMTranslationEngine {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw EngineError.empty }
 
-        guard let resolved = LLMResolver.resolve(.translation) else {
+        let resolved: LLMResolver.Resolved
+        if let resolvedClient {
+            resolved = resolvedClient
+        } else if let live = LLMResolver.resolve(.translation) {
+            resolved = live
+        } else {
             throw EngineError.unresolvedRole
         }
 

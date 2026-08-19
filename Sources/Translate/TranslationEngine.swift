@@ -136,3 +136,64 @@ struct LLMVoiceTranslationEngine: TranslationEngine {
         return output.translated
     }
 }
+
+// MARK: - Pack download resolution (BUG 2)
+
+/// Pure decision for *which* language pack to queue when Apple reports a pair as
+/// `.supported` (supported, but at least one side's pack isn't downloaded).
+/// `.supported` alone doesn't say which side is missing — the old code always
+/// queued the target, so translating an uninstalled non-English source INTO
+/// already-installed English deep-linked a useless English→English download and
+/// the blocked translation could never be resolved. Given each side's install
+/// state, return the code that actually needs downloading.
+enum TranslationPackResolver {
+    static func codeToDownload(sourceInstalled: Bool,
+                               targetInstalled: Bool,
+                               sourceCode: String,
+                               targetCode: String) -> String {
+        if !sourceInstalled { return sourceCode }
+        if !targetInstalled { return targetCode }
+        // Both look installed — `.supported` shouldn't have occurred. Prefer the
+        // source (the target is usually English / already present).
+        return sourceCode
+    }
+}
+
+#if canImport(Translation)
+/// Probes single-language install status via `LanguageAvailability`, then feeds
+/// `TranslationPackResolver` to pick the missing pack. English is the anchor the
+/// pack feature already assumes present (the download flow prepares `en → <lang>`
+/// to fetch a pack), so it's the pivot for per-language probes.
+@available(macOS 15.0, *)
+enum ApplePackProbe {
+    static let anchor = "en"
+
+    /// True when `code`'s on-device pack appears installed. Probes `anchor → code`;
+    /// `.installed` means both packs are present, so `code`'s is present. The
+    /// anchor itself is treated as installed by convention.
+    static func isInstalled(_ code: String,
+                            availability: LanguageAvailability = LanguageAvailability()) async -> Bool {
+        if TranslationLanguage.sameLanguage(code, anchor) { return true }
+        let status = await availability.status(
+            from: Locale.Language(identifier: anchor),
+            to: Locale.Language(identifier: code))
+        return status == .installed
+    }
+
+    /// Language code to queue for download when the pair came back `.supported`.
+    /// Resolves each side's install status, then delegates the choice to the pure
+    /// `TranslationPackResolver`.
+    static func codeToDownload(source: String?,
+                               target: String,
+                               availability: LanguageAvailability = LanguageAvailability()) async -> String {
+        let sourceCode = source ?? Locale.current.language.languageCode?.identifier ?? anchor
+        let sourceInstalled = await isInstalled(sourceCode, availability: availability)
+        let targetInstalled = await isInstalled(target, availability: availability)
+        return TranslationPackResolver.codeToDownload(
+            sourceInstalled: sourceInstalled,
+            targetInstalled: targetInstalled,
+            sourceCode: sourceCode,
+            targetCode: target)
+    }
+}
+#endif

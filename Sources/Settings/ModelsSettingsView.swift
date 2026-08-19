@@ -13,10 +13,6 @@ struct ModelsSettingsView: View {
     @AppStorage("whisperKitModel")          private var whisperKitModel   = WhisperKitClient.defaultModel
     @AppStorage("meetingsBackend")          private var meetingsBackend   = "whisperkit"
     @AppStorage("meetingsWhisperKitModel")  private var meetingsWKModel   = WhisperKitClient.defaultModel
-    // Parakeet (NVIDIA TDT, runs on the Apple Neural Engine via FluidAudio).
-    // Versions: v2 = English-only, lowest WER. v3 = 25 EU + JA/ZH.
-    @AppStorage("parakeetVersionShort")     private var parakeetVersionShort    = "v3"
-    @AppStorage("parakeetVersionMeetings")  private var parakeetVersionMeetings = "v3"
 
     @AppStorage("dictationLLMProvider")    private var dictationProvider    = "openrouter"
     @AppStorage("cleanupLLMProvider")      private var cleanupProvider      = "openrouter"
@@ -36,12 +32,21 @@ struct ModelsSettingsView: View {
 
     var body: some View {
         Form {
+            // A Keychain write can fail silently (locked keychain, denied
+            // access) — surface it so the user doesn't believe a key saved
+            // when it didn't.
+            if let writeError = secrets.lastWriteError {
+                Section {
+                    Label(writeError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+            }
             // Speech-to-text engines for both modes.
             Section {
                 Picker("Dictation", selection: $shortBackend) {
                     Text("Apple Speech  (free · on-device)").tag("apple")
                     Text("WhisperKit  (offline · highest accuracy)").tag("whisperkit")
-                    Text("Parakeet TDT  (coming soon)").tag("parakeet")
                     Text("Deepgram nova-3  (cloud)").tag("deepgram")
                 }
                 switch shortBackend {
@@ -54,13 +59,6 @@ struct ModelsSettingsView: View {
                                 visible: $deepgramVisible)
                 case "whisperkit":
                     WhisperKitModelPicker(title: "WhisperKit model", modelID: $whisperKitModel)
-                case "parakeet":
-                    Picker("Parakeet model", selection: $parakeetVersionShort) {
-                        Text("v3 — 25 EU + JA/ZH (multilingual)").tag("v3")
-                        Text("v2 — English only (lowest WER)").tag("v2")
-                    }
-                    Text("Parakeet isn't available yet — dictation uses Apple Speech for now.")
-                        .font(.caption).foregroundColor(.orange)
                 default:
                     EmptyView()
                 }
@@ -69,23 +67,15 @@ struct ModelsSettingsView: View {
             Section {
                 Picker("Meetings", selection: $meetingsBackend) {
                     Text("WhisperKit  (offline)").tag("whisperkit")
-                    Text("Parakeet TDT  (coming soon)").tag("parakeet")
                 }
                 switch meetingsBackend {
                 case "whisperkit":
                     WhisperKitModelPicker(title: "WhisperKit model", modelID: $meetingsWKModel)
-                case "parakeet":
-                    Picker("Parakeet model", selection: $parakeetVersionMeetings) {
-                        Text("v3 — 25 EU + JA/ZH (multilingual)").tag("v3")
-                        Text("v2 — English only (lowest WER)").tag("v2")
-                    }
-                    Text("Parakeet isn't available yet — meetings use WhisperKit for now.")
-                        .font(.caption).foregroundColor(.orange)
                 default:
                     EmptyView()
                 }
             } header: { Text("Meetings engine") } footer: {
-                Text("Apple Speech and Deepgram are mic-only / streaming-only and can't transcribe pre-recorded meeting audio. WhisperKit and Parakeet both run on-device and accept file URLs.")
+                Text("Apple Speech and Deepgram are mic-only / streaming-only and can't transcribe pre-recorded meeting audio. WhisperKit runs on-device and accepts file URLs.")
                     .font(.caption).foregroundColor(.secondary)
             }
 
@@ -119,7 +109,7 @@ struct ModelsSettingsView: View {
                     Text("Local diarization (FluidAudio CoreML) ships in v0.6 — Swift package integration pending. Pick AssemblyAI or Deepgram for now.")
                         .font(.caption).foregroundColor(.orange)
                 }
-            } header: { Text("Diarization — speaker labeling") } footer: {
+            } header: { Text("Label speakers") } footer: {
                 Text("Adds [Speaker A] / [Speaker B] labels to transcript segments. Cloud engines send the audio file to the provider; FluidAudio runs fully on-device (v0.6). Off = no speaker labels (live recordings still use channel-based [Me]/[Other]).")
                     .font(.caption).foregroundColor(.secondary)
             }
@@ -172,11 +162,18 @@ struct ModelsSettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Models")
+        .onAppear {
+            // Parakeet was a "coming soon" stub, removed for launch. Migrate any
+            // persisted selection to the engine the app actually falls back to,
+            // so the picker never shows a blank (unmatched-tag) selection.
+            if shortBackend == "parakeet" { shortBackend = "apple" }
+            if meetingsBackend == "parakeet" { meetingsBackend = "whisperkit" }
+        }
         .sheet(isPresented: $showAddSheet) {
             AddModelSheet(editing: nil,
                           onSave: { newModel, apiKey in
                               if !apiKey.isEmpty {
-                                  try? KeychainStore.set(apiKey, forKey: newModel.provider.apiKeyKeychainKey)
+                                  saveProviderKey(apiKey, forKey: newModel.provider.apiKeyKeychainKey)
                               }
                               modelStore.add(newModel)
                               showAddSheet = false
@@ -191,7 +188,7 @@ struct ModelsSettingsView: View {
                               // skips the write so existing keys aren't
                               // wiped if the user blanked the field.
                               if !apiKey.isEmpty {
-                                  try? KeychainStore.set(apiKey, forKey: updated.provider.apiKeyKeychainKey)
+                                  saveProviderKey(apiKey, forKey: updated.provider.apiKeyKeychainKey)
                               }
                               modelStore.update(updated)
                               editingModel = nil
@@ -224,6 +221,18 @@ struct ModelsSettingsView: View {
                 Text("OpenRouter (default)").tag("openrouter")
                 Text("Ollama (default)").tag("ollama")
             }
+        }
+    }
+
+    /// Saves a provider API key, surfacing a Keychain write failure through the
+    /// shared error banner (SecretsStore.lastWriteError) instead of silently
+    /// dropping it — otherwise a user believes a key saved when it didn't.
+    private func saveProviderKey(_ key: String, forKey keychainKey: String) {
+        do {
+            try KeychainStore.set(key, forKey: keychainKey)
+            secrets.lastWriteError = nil
+        } catch {
+            secrets.lastWriteError = "Couldn't save the API key to the Keychain: \(error.localizedDescription)"
         }
     }
 }
@@ -261,6 +270,7 @@ private struct ConfiguredModelRow: View {
             }
             .buttonStyle(.plain)
             .help("Edit model + API key")
+            .accessibilityLabel("Edit model")
 
             Button(role: .destructive, action: onDelete) {
                 Image(systemName: "trash")
@@ -268,6 +278,7 @@ private struct ConfiguredModelRow: View {
             }
             .buttonStyle(.plain)
             .help("Remove from list")
+            .accessibilityLabel("Delete model")
         }
         .padding(.vertical, 2)
     }

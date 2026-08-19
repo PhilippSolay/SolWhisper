@@ -91,18 +91,4 @@ enum KeychainStore {
         if status == errSecSuccess || status == errSecItemNotFound { return }
         throw KeychainError.unexpectedStatus(status)
     }
-
-    // MARK: - Test helper
-
-    /// Wipes every entry written with this service. Test-only.
-    /// Don't call from production code.
-    static func _wipeAllForTesting() throws {
-        let query: [String: Any] = [
-            kSecClass as String:       kSecClassGenericPassword,
-            kSecAttrService as String: service
-        ]
-        let status = SecItemDelete(query as CFDictionary)
-        if status == errSecSuccess || status == errSecItemNotFound { return }
-        throw KeychainError.unexpectedStatus(status)
-    }
 }

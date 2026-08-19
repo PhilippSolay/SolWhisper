@@ -26,7 +26,10 @@ struct HermesIntegration {
                      transcriptMarkdown: String,
                      summaryMarkdown: String) async throws -> Int {
         let urlString = UserDefaults.standard.string(forKey: "hermesURL") ?? ""
-        guard let url = URL(string: urlString), isConfigured else { return -1 }
+        guard isConfigured else { return -1 }
+        // Require https (or http to loopback) so a transcript never egresses in
+        // cleartext, and a misconfigured http:// URL fails loudly.
+        let url = try IntegrationURL.validated(urlString)
 
         let secret = (try? KeychainStore.string(forKey: "hermesSecret")) ?? nil
 

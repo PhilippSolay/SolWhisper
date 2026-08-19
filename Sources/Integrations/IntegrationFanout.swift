@@ -123,10 +123,13 @@ struct IntegrationFanout {
             summaryMarkdown: summaryMarkdown
         )
         for hook in CustomWebhookStore.shared.enabled {
-            guard let url = URL(string: hook.urlString) else {
+            let url: URL
+            do {
+                url = try IntegrationURL.validated(hook.urlString)
+            } catch {
                 DebugLog.shared.log(icon: "🪝",
-                                    label: "Webhook \"\(hook.name)\" bad URL",
-                                    value: hook.urlString, ok: false)
+                                    label: "Webhook \"\(hook.name)\" rejected URL",
+                                    value: "\(hook.urlString): \(error.localizedDescription)", ok: false)
                 failed.append(hook.name)
                 continue
             }
@@ -157,5 +160,46 @@ struct IntegrationFanout {
         }
 
         return Result(sent: sent, failed: failed, skipped: skipped)
+    }
+}
+
+// MARK: - Shared integration URL validation
+
+/// Validates a user-supplied integration URL before we POST a transcript to it.
+/// Requires `https` so transcripts never leave over cleartext, with an explicit
+/// exception for loopback hosts (localhost / 127.0.0.1 / ::1) over plain http so
+/// a locally-run ingest endpoint still works. Any other scheme (plain http to a
+/// remote host, file, ftp, ...) is rejected. Top-level (non-isolated) so the
+/// non-MainActor HermesIntegration can call it too.
+enum IntegrationURL {
+
+    enum ValidationError: LocalizedError, Equatable {
+        case malformed(String)
+        case insecureScheme(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .malformed(let s):
+                return "Invalid integration URL: \(s)"
+            case .insecureScheme(let s):
+                return "Integration URL must use https (http allowed only for localhost): \(s)"
+            }
+        }
+    }
+
+    /// Hosts permitted to use plain `http`.
+    static let loopbackHosts: Set<String> = ["localhost", "127.0.0.1", "::1"]
+
+    /// Returns a validated `URL` or throws `ValidationError`.
+    static func validated(_ string: String) throws -> URL {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              let host = url.host?.lowercased(), !host.isEmpty else {
+            throw ValidationError.malformed(string)
+        }
+        if scheme == "https" { return url }
+        if scheme == "http", loopbackHosts.contains(host) { return url }
+        throw ValidationError.insecureScheme(string)
     }
 }

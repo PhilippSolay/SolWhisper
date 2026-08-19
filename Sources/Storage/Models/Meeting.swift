@@ -35,6 +35,11 @@ struct Meeting: Codable, Identifiable, Equatable, Sendable {
     /// `EKEvent.eventIdentifier` of the linked event so we can re-resolve
     /// the canonical attendee list later if needed.
     var calendarEventID: String?
+    /// True when this meeting was recorded with only the microphone because
+    /// Screen Recording wasn't granted — the other participants' audio was
+    /// never captured. Drives a "Mic only" badge in the detail view. Optional
+    /// for backwards compat (nil = normal capture / pre-this-field meetings).
+    var micOnly: Bool?
 
     init(
         id: UUID = UUID(),
@@ -54,7 +59,8 @@ struct Meeting: Codable, Identifiable, Equatable, Sendable {
         speakerNames: [String: String]? = nil,
         diarizationEngine: String? = nil,
         calendarEventTitle: String? = nil,
-        calendarEventID: String? = nil
+        calendarEventID: String? = nil,
+        micOnly: Bool? = nil
     ) {
         self.id = id
         self.schemaVersion = schemaVersion
@@ -74,5 +80,6 @@ struct Meeting: Codable, Identifiable, Equatable, Sendable {
         self.diarizationEngine = diarizationEngine
         self.calendarEventTitle = calendarEventTitle
         self.calendarEventID = calendarEventID
+        self.micOnly = micOnly
     }
 }

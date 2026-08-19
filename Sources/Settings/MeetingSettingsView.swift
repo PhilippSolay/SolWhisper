@@ -10,13 +10,10 @@ struct MeetingSettingsView: View {
     @AppStorage("diarizationEngine")      private var diarizationEngine = ""
     @AppStorage("meetingsAudioDucking")   private var audioDucking      = true
     @AppStorage("meetingsClippingDetect") private var clippingDetect    = true
-    @AppStorage("meetingsChunkSeconds")   private var chunkSeconds      = 30
     @AppStorage("meetingsRecordingDisclosure") private var showDisclosure = true
     @AppStorage("meetingsRootPath")       private var meetingsRootPath  = ""
 
     @StateObject private var skillsRegistry = SkillsRegistry.shared
-
-    private let chunkOptions = [15, 30, 60]
 
     var body: some View {
         Form {
@@ -57,20 +54,14 @@ struct MeetingSettingsView: View {
                 Toggle("Auto-send to integrations after summary", isOn: $autoIntegrate)
                     .disabled(!autoSummarize)
             } header: { Text("Auto-pipeline (after stop)") } footer: {
-                Text("Each toggle is independent. The pipeline runs in order: Clean → Diarize → Summarize → Integrations. Skipping a step (e.g. Auto-clean off) just hands the unmodified transcript to the next step.")
+                Text("Each toggle is independent. The pipeline runs in order: Clean → Label speakers → Summarize → Integrations. Skipping a step (e.g. Auto-clean off) just hands the unmodified transcript to the next step.")
                     .font(.caption).foregroundColor(.secondary)
             }
 
             Section {
                 Toggle("Side-chain ducking (lowers other-app audio when you speak)", isOn: $audioDucking)
                 Toggle("Clipping detector", isOn: $clippingDetect)
-                Picker("Chunk size", selection: $chunkSeconds) {
-                    ForEach(chunkOptions, id: \.self) { Text("\($0) s").tag($0) }
-                }
-            } header: { Text("Audio") } footer: {
-                Text("Larger chunks = fewer disk writes but more lost audio if the app crashes mid-recording.")
-                    .font(.caption).foregroundColor(.secondary)
-            }
+            } header: { Text("Audio") }
 
             Section {
                 Toggle("Show disclosure overlay during recording", isOn: $showDisclosure)

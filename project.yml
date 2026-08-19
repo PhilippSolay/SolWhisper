@@ -51,6 +51,7 @@ targets:
           - "Info.plist"
           - "SolWhisper.entitlements"
           - "local-secrets.example.json"
+          - "local-secrets.json"
           - ".DS_Store"
           - "SkillPacks"
       # SkillPacks + Skills both ship as folder references (blue folders) so

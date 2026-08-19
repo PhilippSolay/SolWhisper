@@ -72,11 +72,20 @@ final class ImportQueue: ObservableObject, FileImportControllerDelegate {
     var onBatchFinished: (BatchReport) -> Void = { _ in }
 
     private let store: MeetingStore
-    private var current: FileImportController?
+    private var current: (any ImportControlling)?
     private var currentItemID: UUID?
 
-    init(store: MeetingStore) {
+    /// Factory for the per-item import controller. Defaults to the real
+    /// `FileImportController`; tests inject a stub so the serial pump (dedup,
+    /// advance, continue-on-failure, cancel serialization) can be exercised
+    /// without live WhisperKit transcription.
+    private let makeController: @MainActor (MeetingStore) -> any ImportControlling
+
+    init(store: MeetingStore,
+         makeController: @escaping @MainActor (MeetingStore) -> any ImportControlling
+            = { FileImportController(store: $0) }) {
         self.store = store
+        self.makeController = makeController
     }
 
     // MARK: - Derived state (for the header + summary)
@@ -134,10 +143,10 @@ final class ImportQueue: ObservableObject, FileImportControllerDelegate {
                 // failures (single → pop-up, many → part of the log).
                 items.append(Item(id: UUID(),
                                   audioURL: url,
-                                  status: .failed("Not a supported audio file"),
+                                  status: .failed(Self.unsupportedFileMessage),
                                   stage: .transcribing,
                                   stageFraction: nil,
-                                  detail: "Not a supported audio file",
+                                  detail: Self.unsupportedFileMessage,
                                   enabledStages: [],
                                   meetingID: nil,
                                   segmentCount: 0))
@@ -187,7 +196,7 @@ final class ImportQueue: ObservableObject, FileImportControllerDelegate {
         items[idx].status = .active
         currentItemID = items[idx].id
 
-        let controller = FileImportController(store: store)
+        let controller = makeController(store)
         controller.delegate = self
         current = controller
         controller.begin(audioURL: items[idx].audioURL)
@@ -228,7 +237,7 @@ final class ImportQueue: ObservableObject, FileImportControllerDelegate {
 
     // MARK: - FileImportControllerDelegate
 
-    func fileImport(_ controller: FileImportController,
+    func fileImport(_ controller: any ImportControlling,
                     didEnter phase: FileImportController.Phase) {
         // Ignore stray callbacks from a controller we've already advanced past
         // — WhisperKit progress can land after the item resolved.
@@ -241,12 +250,13 @@ final class ImportQueue: ObservableObject, FileImportControllerDelegate {
             setStage(idx, .transcribing, detail: "Validating audio…")
         case .copying:
             setStage(idx, .transcribing, detail: "Copying file…")
-        case .loadingModel(let model, let alreadyDownloaded):
-            let name = WhisperKitClient.displayName(for: model)
+        case .loadingModel(_, let alreadyDownloaded):
+            // Friendly copy — the raw WhisperKit repo ID ("base.en") is jargon
+            // to end users, so surface the role ("speech model") instead.
             setStage(idx, .transcribing,
                      detail: alreadyDownloaded
-                        ? "Loading model (\(name))…"
-                        : "Downloading model \(name) — first use…")
+                        ? "Loading speech model…"
+                        : "Downloading speech model — first-time setup…")
         case .warming(let audioSeconds):
             let hint = audioSeconds > 0 ? " · \(Self.clock(audioSeconds)) of audio" : ""
             setStage(idx, .transcribing,
@@ -267,9 +277,14 @@ final class ImportQueue: ObservableObject, FileImportControllerDelegate {
         case .sending:
             setStage(idx, .integrating, detail: "Sending to integrations…")
         case .cancelling:
-            items[idx].status = .cancelled
-            items[idx].detail = "Cancelled"
-            advance()
+            // Serialize teardown — do NOT advance here. The controller emits
+            // .cancelling synchronously from cancel(), while its transcription
+            // task is still unwinding; starting the next item now would run two
+            // transcriptions on the shared WhisperKit instance at once. We keep
+            // the row .active ("Cancelling…") and wait for the task's terminal
+            // phase (.failed("Cancelled")/.done), emitted only after run() fully
+            // unwinds — advance() fires there, so at most one transcription runs.
+            items[idx].detail = "Cancelling…"
         case .done(let meetingID, _, let segments, _):
             items[idx].status = .done
             items[idx].meetingID = meetingID
@@ -299,5 +314,21 @@ final class ImportQueue: ObservableObject, FileImportControllerDelegate {
     private static func clock(_ seconds: TimeInterval) -> String {
         let total = Int(seconds.rounded())
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    // MARK: - User-facing copy
+
+    /// Comma-separated, uppercased list of importable extensions, from the
+    /// single source of truth (`FileTranscriber.acceptedExtensions`). Sorted so
+    /// the output is stable (the set has no inherent order).
+    static var supportedFormatsList: String {
+        FileTranscriber.acceptedExtensions.sorted().map { $0.uppercased() }.joined(separator: ", ")
+    }
+
+    /// Rejection message for a dropped file the transcriber can't read. Lists
+    /// what IS supported so the user knows how to fix it, instead of a dead-end
+    /// "Not a supported audio file".
+    static var unsupportedFileMessage: String {
+        "Not a supported audio file. Supported formats: \(supportedFormatsList)."
     }
 }
