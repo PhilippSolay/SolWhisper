@@ -11,11 +11,10 @@ settings:
     SWIFT_VERSION: "5.9"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
     CODE_SIGN_STYLE: Automatic
-    # Sprint 0: leave blank until Apple Developer cert is available locally.
-    # Once the Developer ID Application cert is in Keychain, set this to the
-    # 10-char Team ID and switch CODE_SIGN_IDENTITY to "Developer ID Application".
-    # `scripts/release.sh` also accepts SW_TEAM_ID env var as an override.
-    DEVELOPMENT_TEAM: ""
+    # Studio Solay Apple Developer team. Release builds switch to
+    # CODE_SIGN_IDENTITY="Developer ID Application" via scripts/release.sh
+    # (SW_TEAM_ID env var overrides this value there).
+    DEVELOPMENT_TEAM: "LCG7C9T9J8"
     PRODUCT_BUNDLE_IDENTIFIER: cloud.solay.SolWhisper
     ENABLE_HARDENED_RUNTIME: YES
     OTHER_SWIFT_FLAGS: ""
