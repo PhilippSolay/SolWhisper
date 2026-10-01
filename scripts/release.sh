@@ -103,13 +103,33 @@ echo "▶ Bump version + build"
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$INFO_PLIST"
 
+# Any abort after this point (build error, notary rejection, staple failure) used to
+# leave the bumped version sitting in the working tree — the dry-run restore only ran
+# on the success path. Restore on every non-zero exit; a successful real release keeps
+# the bump, which is what gets committed below.
+_restore_info_plist_on_failure() {
+    local rc=$?
+    if [ $rc -ne 0 ]; then
+        git checkout -- "$INFO_PLIST" 2>/dev/null && \
+            echo "  ▸ restored $INFO_PLIST (release aborted)"
+    fi
+    return $rc
+}
+trap _restore_info_plist_on_failure EXIT
+
 # The Bump Build Number build phase auto-increments CFBundleVersion during
 # xcodebuild. Don't set it manually here.
 #
-# When SW_TEAM_ID is set, xcodebuild does Developer ID signing in-tree. The
-# downstream re-sign block still re-signs the bundle in staging (so the DMG
-# matches what we hand to notarytool), but having xcodebuild use the right
-# team avoids "Sparkle.framework not signed by same team" warnings.
+# When SW_TEAM_ID is set, xcodebuild does Developer ID signing in-tree. CODE_SIGN_STYLE
+# MUST flip to Manual here: project.yml uses Automatic (right for day-to-day Xcode
+# builds), and Automatic + a manually specified "Developer ID Application" identity is
+# a hard xcodebuild error ("conflicting provisioning settings"). No provisioning
+# profile is needed — the entitlements (audio-input, apple-events, network.client)
+# are all profile-free.
+#
+# The downstream re-sign block still re-signs the bundle in staging (so the DMG matches
+# what we hand to notarytool), but having xcodebuild use the right team avoids
+# "Sparkle.framework not signed by same team" warnings.
 XCODEBUILD_ARGS=(
     -project "$PROJECT_DIR/$APP_NAME.xcodeproj"
     -scheme "$APP_NAME"
@@ -118,7 +138,7 @@ XCODEBUILD_ARGS=(
     clean build
 )
 if [ -n "${SW_TEAM_ID:-}" ]; then
-    XCODEBUILD_ARGS+=(DEVELOPMENT_TEAM="$SW_TEAM_ID" CODE_SIGN_IDENTITY="Developer ID Application")
+    XCODEBUILD_ARGS+=(DEVELOPMENT_TEAM="$SW_TEAM_ID" CODE_SIGN_IDENTITY="Developer ID Application" CODE_SIGN_STYLE=Manual PROVISIONING_PROFILE_SPECIFIER="")
 fi
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   xcodebuild "${XCODEBUILD_ARGS[@]}" 2>&1 | grep -E "(error:|BUILD SUCCEEDED|BUILD FAILED)" | head -3
@@ -176,6 +196,20 @@ sign_and_notarize() {
     local app="$1"
     if [ -n "${SW_DEVELOPER_ID:-}" ] && [ -n "${SW_NOTARIZE_PROFILE:-}" ]; then
         echo "  ▸ Developer ID signing: $SW_DEVELOPER_ID"
+        # Sign inside-out FIRST. solwhisper-mcp is copied into Contents/Resources
+        # (and Contents/MacOS); a Mach-O in Resources/ is NOT a standard nested-code
+        # location, so --deep leaves it with whatever xcodebuild produced: no secure
+        # timestamp and an injected com.apple.security.get-task-allow. Both are hard
+        # notarization errors ("Archive contains critical validation errors",
+        # submission ddf68c11 on 2026-08-19). Re-signing without --entitlements drops
+        # get-task-allow; --timestamp adds the secure timestamp.
+        for helper in "$app/Contents/Resources/solwhisper-mcp" \
+                      "$app/Contents/MacOS/solwhisper-mcp"; do
+            [ -f "$helper" ] || continue
+            codesign --force --options runtime --timestamp \
+                --sign "$SW_DEVELOPER_ID" "$helper"
+            echo "  ▸ re-signed nested helper: ${helper#$app/}"
+        done
         codesign --force --deep --options runtime --timestamp \
             --entitlements "$ENTITLEMENTS" \
             --sign "$SW_DEVELOPER_ID" "$app"
@@ -194,10 +228,23 @@ sign_and_notarize() {
         [ -n "$notary_dir" ] && [ -d "$notary_dir" ] || { echo "  ✗ notarize mktemp failed"; exit 1; }
         local notary_zip="$notary_dir/$APP_NAME.zip"
         /usr/bin/ditto -c -k --keepParent "$app" "$notary_zip"
+        # notarytool submit --wait can exit 0 on a COMPLETED-but-Invalid submission,
+        # which used to let the script sail on into a doomed staple. Check the status
+        # line and dump the notary log on anything other than Accepted.
+        local submit_log="$notary_dir/submit.txt"
         if ! xcrun notarytool submit "$notary_zip" \
                 --keychain-profile "$SW_NOTARIZE_PROFILE" \
-                --wait; then
+                --wait 2>&1 | tee "$submit_log"; then
             echo "  ✗ notarytool submission failed — check output above"
+            rm -rf "$notary_dir"
+            exit 1
+        fi
+        if ! grep -q "status: Accepted" "$submit_log"; then
+            echo "  ✗ notarization did NOT succeed — Apple's log follows:"
+            local sub_id
+            sub_id=$(awk '/^ *id: /{print $2; exit}' "$submit_log")
+            [ -n "$sub_id" ] && xcrun notarytool log "$sub_id" \
+                --keychain-profile "$SW_NOTARIZE_PROFILE" || true
             rm -rf "$notary_dir"
             exit 1
         fi
@@ -280,7 +327,7 @@ if [ -z "${SW_SKIP_UNIVERSAL:-}" ]; then
         ONLY_ACTIVE_ARCH=NO
     )
     if [ -n "${SW_TEAM_ID:-}" ]; then
-        XCODEBUILD_UNIVERSAL_ARGS+=(DEVELOPMENT_TEAM="$SW_TEAM_ID" CODE_SIGN_IDENTITY="Developer ID Application")
+        XCODEBUILD_UNIVERSAL_ARGS+=(DEVELOPMENT_TEAM="$SW_TEAM_ID" CODE_SIGN_IDENTITY="Developer ID Application" CODE_SIGN_STYLE=Manual PROVISIONING_PROFILE_SPECIFIER="")
     fi
     DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
       xcodebuild "${XCODEBUILD_UNIVERSAL_ARGS[@]}" 2>&1 | grep -E "(error:|BUILD SUCCEEDED|BUILD FAILED)" | head -3
