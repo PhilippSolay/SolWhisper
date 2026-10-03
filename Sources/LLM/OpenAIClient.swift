@@ -42,13 +42,14 @@ struct OpenAIClient: LLMClient {
             "messages": messages.map { ["role": $0.role.rawValue, "content": $0.content] },
             "temperature": temperature
         ]
-        // o-series reasoning models reject `max_tokens` and `temperature`;
-        // they only accept `max_completion_tokens`. Detect by prefix.
-        if model.hasPrefix("o1") || model.hasPrefix("o3") {
+        // Reasoning models (o-series, GPT-5 and later) reject `max_tokens`
+        // and `temperature`; they only accept `max_completion_tokens`. Only
+        // the legacy GPT-3.5/GPT-4 families keep the old shape.
+        if model.hasPrefix("gpt-3") || model.hasPrefix("gpt-4") {
+            body["max_tokens"] = maxTokens
+        } else {
             body.removeValue(forKey: "temperature")
             body["max_completion_tokens"] = maxTokens
-        } else {
-            body["max_tokens"] = maxTokens
         }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 

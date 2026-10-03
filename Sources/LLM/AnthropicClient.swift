@@ -24,6 +24,14 @@ struct AnthropicClient: LLMClient {
     /// either — Anthropic just no-ops the directive in that case.
     static let cacheMinChars = 4_000
 
+    /// Opus 4.7+ and the Claude 5 family reject sampling params with a 400;
+    /// only the older generations still take `temperature`.
+    static func acceptsTemperature(_ model: String) -> Bool {
+        ["claude-3", "claude-haiku-4", "claude-sonnet-4", "claude-opus-4-0",
+         "claude-opus-4-1", "claude-opus-4-2", "claude-opus-4-5", "claude-opus-4-6"]
+            .contains { model.hasPrefix($0) }
+    }
+
     func complete(messages: [LLMMessage],
                   model: String,
                   temperature: Double,
@@ -54,9 +62,9 @@ struct AnthropicClient: LLMClient {
         var body: [String: Any] = [
             "model": model,
             "max_tokens": maxTokens,
-            "temperature": temperature,
             "messages": chatMessages
         ]
+        if Self.acceptsTemperature(model) { body["temperature"] = temperature }
         if !systemPrompt.isEmpty {
             // Long system prompts (skill packs) get wrapped in a cacheable
             // block so subsequent calls within the 5-minute TTL hit the
@@ -131,10 +139,10 @@ struct AnthropicClient: LLMClient {
                     var body: [String: Any] = [
                         "model": model,
                         "max_tokens": maxTokens,
-                        "temperature": temperature,
                         "messages": chatMessages,
                         "stream": true
                     ]
+                    if Self.acceptsTemperature(model) { body["temperature"] = temperature }
                     if !systemPrompt.isEmpty {
                         if systemPrompt.count >= Self.cacheMinChars {
                             body["system"] = [[

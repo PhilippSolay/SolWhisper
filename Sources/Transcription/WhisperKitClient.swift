@@ -30,6 +30,9 @@ final class WhisperKitClient {
     var onSpectrumUpdate: (([Float]) -> Void)?
 
     private let model: String
+    /// Whisper decode-language code ("es"); nil keeps the historical
+    /// forced-English prefill.
+    private let language: String?
     private let engine = AVAudioEngine()
     private var recordingFile: AVAudioFile?
     private var recordingURL: URL?
@@ -47,8 +50,9 @@ final class WhisperKitClient {
     private var fftWindow = [Float]()
     private var fftAccum  = [Float](repeating: 0, count: AudioEngine.fftBinCount)
 
-    init(model: String) {
+    init(model: String, language: String? = nil) {
         self.model = model
+        self.language = language
     }
 
     deinit {
@@ -144,7 +148,7 @@ final class WhisperKitClient {
             DebugLog.shared.log(icon: "🟣", label: "WhisperKit loading model", value: model)
             do {
                 let segments = try await WhisperKitClient.fileTranscribe(
-                    audioPath: url, model: model, progress: nil
+                    audioPath: url, model: model, language: self.language, progress: nil
                 )
                 let text = segments.map { $0.text }.joined(separator: " ")
                                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -196,10 +200,17 @@ final class WhisperKitClient {
     /// there as "large-v3-v20240930" — its release-date name — with a
     /// "_626MB" quantized sibling. A bare "large-v3-turbo" matches nothing
     /// and throws "No models found".
+    /// Ordered smallest→largest — `AppleSpeechClient.rescueModel` relies on
+    /// this to pick the cheapest downloaded model. ".en" variants decode
+    /// English only; the bare names are the multilingual checkpoints that
+    /// non-English dictation needs.
     nonisolated static let supportedModels: [String] = [
         "tiny.en",
+        "tiny",
         "base.en",
+        "base",
         "small.en",
+        "small",
         "large-v3-v20240930_626MB",
         "large-v3-v20240930"
     ]
@@ -310,6 +321,7 @@ final class WhisperKitClient {
     static func fileTranscribe(
         audioPath: URL,
         model: String,
+        language: String? = nil,
         progress: ((Double) -> Void)? = nil
     ) async throws -> [TranscriptSegment] {
         // Fail fast before paying the model load / download cost.
@@ -347,7 +359,12 @@ final class WhisperKitClient {
         // run as a single sequential 30s-window decode and a 70-min file
         // takes 15+ minutes per channel on M-series. With VAD chunking the
         // same file is typically 3-5x faster with the same or better accuracy.
-        let options = DecodingOptions(chunkingStrategy: .vad)
+        // `language: nil` keeps WhisperKit's default prefill, which forces the
+        // <|en|> token — the historical behavior meetings and file import
+        // still rely on. Dictation passes the selected language's code so
+        // multilingual models decode Spanish as Spanish instead of
+        // translating it.
+        let options = DecodingOptions(language: language, chunkingStrategy: .vad)
         let results = try await whisper.transcribe(
             audioPath: audioPath.path,
             decodeOptions: options,

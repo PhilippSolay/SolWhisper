@@ -52,18 +52,17 @@ enum ModelProvider: String, CaseIterable, Codable, Sendable {
 
     /// Curated model presets shown in the Add Model sheet's Model picker.
     /// Custom entries can be added via the model dropdown's free-text branch.
-    /// Updated for the current (Jan 2026) model generation.
+    /// Updated for the current (Oct 2026) model generation.
     var presetModelIDs: [String] {
         switch self {
         case .openai:
-            return ["gpt-4o", "gpt-4o-mini", "o1", "o1-mini", "o3-mini"]
+            return ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.5"]
         case .anthropic:
             return [
-                "claude-opus-4-7",
-                "claude-sonnet-4-6",
-                "claude-haiku-4-5-20251001",
-                "claude-3-5-sonnet-latest",
-                "claude-3-5-haiku-latest"
+                "claude-opus-5-5",
+                "claude-sonnet-5-5",
+                "claude-haiku-4-5",
+                "claude-fable-5-1"
             ]
         case .google:
             return [
@@ -81,16 +80,15 @@ enum ModelProvider: String, CaseIterable, Codable, Sendable {
             ]
         case .openrouter:
             return [
-                "anthropic/claude-opus-4-7",
-                "anthropic/claude-sonnet-4-6",
-                "anthropic/claude-haiku-4-5",
-                "anthropic/claude-3-5-sonnet",
-                "anthropic/claude-3-5-haiku",
-                "openai/gpt-4o",
-                "openai/gpt-4o-mini",
-                "openai/o1",
-                "google/gemini-2.0-flash",
-                "google/gemini-1.5-pro"
+                "anthropic/claude-opus-5.5",
+                "anthropic/claude-sonnet-5.5",
+                "anthropic/claude-haiku-4.5",
+                "anthropic/claude-fable-5.1",
+                "openai/gpt-6.1-sol",
+                "openai/gpt-6-luna",
+                "openai/gpt-6-astra",
+                "google/gemini-3.8-flash",
+                "google/gemini-3.5-flash-lite"
             ]
         case .ollama:
             return ["llama3.2", "llama3.3", "qwen2.5:14b", "deepseek-r1:14b", "gemma2"]
@@ -109,7 +107,7 @@ enum ModelProvider: String, CaseIterable, Codable, Sendable {
 struct ConfiguredModel: Codable, Identifiable, Equatable, Sendable {
     let id: UUID
     var provider: ModelProvider
-    var modelID: String           // e.g. "claude-3-5-sonnet-latest"
+    var modelID: String           // e.g. "claude-sonnet-5-5"
     var displayName: String       // user-overridable label, "" → use modelID
     /// Per-row star indicator. v0.5 will use it for "preferred" tagging;
     /// for now it's just visual.
