@@ -108,7 +108,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // empty string so `TranslationEngineKind.current` keeps deriving
             // it from OS capability (.apple on 15+, .llm below).
             "translationLLMProvider":        "openrouter",
-            "openRouterModel":    "anthropic/claude-3-5-haiku",
+            "openRouterModel":    "anthropic/claude-haiku-4.5",
             "whisperKitModel":    WhisperKitClient.defaultModel,
             "meetingsWhisperKitModel": WhisperKitClient.defaultModel,
             // Dictation input language (tray Input Language menu). Full
@@ -164,11 +164,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DebugLog.shared.log(icon: "⌨️", label: "Restored recording hotkey",
                                 value: "⌃⌥⌘R (was unset)")
         }
-        // Migrate any previously stored invalid model IDs
+        // Migrate any previously stored invalid or retired model IDs
         let storedModel = UserDefaults.standard.string(forKey: "openRouterModel") ?? ""
-        let invalidModels = ["anthropic/claude-haiku-4-5-20251001", "anthropic/claude-haiku-4-5", "anthropic/claude-sonnet-4-6"]
+        let invalidModels = ["anthropic/claude-haiku-4-5-20251001", "anthropic/claude-haiku-4-5", "anthropic/claude-sonnet-4-6",
+                             "anthropic/claude-3-5-haiku", "anthropic/claude-3-5-sonnet"]
         if invalidModels.contains(storedModel) {
-            UserDefaults.standard.set("anthropic/claude-3-5-haiku", forKey: "openRouterModel")
+            UserDefaults.standard.set("anthropic/claude-haiku-4.5", forKey: "openRouterModel")
         }
 
         // Sprint 0: move openRouterApiKey from UserDefaults → Keychain on first launch.

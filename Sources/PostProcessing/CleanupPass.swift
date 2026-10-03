@@ -262,7 +262,7 @@ struct CleanupPass {
         let m = model.lowercased()
         if m.contains("/")            { return "openrouter" }
         if m.contains("claude")        { return "anthropic" }
-        if m.contains("gpt") || m.hasPrefix("o1") || m.hasPrefix("o3") { return "openai" }
+        if m.contains("gpt") || m.hasPrefix("o1") || m.hasPrefix("o3") || m.hasPrefix("o4") { return "openai" }
         if m.contains("gemini")        { return "google" }
         if m.contains("llama") || m.contains("groq") { return "groq" }
         return "model"
