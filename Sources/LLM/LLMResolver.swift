@@ -108,10 +108,10 @@ enum LLMResolver {
             switch role {
             case .summary:
                 model = UserDefaults.standard.string(forKey: "summaryOpenRouterModel")
-                      ?? "anthropic/claude-3-5-haiku"
+                      ?? "anthropic/claude-haiku-4.5"
             default:
                 model = UserDefaults.standard.string(forKey: "openRouterModel")
-                     ?? "anthropic/claude-3-5-haiku"
+                     ?? "anthropic/claude-haiku-4.5"
             }
             return Resolved(client: OpenRouterLLMClient(),
                             modelID: model,

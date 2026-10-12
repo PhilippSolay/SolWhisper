@@ -26,6 +26,8 @@ class TranscriptionController: ObservableObject {
 
     /// Backend locked at startRecording() to avoid mid-session UserDefaults changes
     private var activeBackend = "apple"
+    /// Input language locked at startRecording(), same rationale.
+    private var activeLanguage = DictationLanguage.fallback
 
     // Audio-flow watchdog — surfaces a friendly error if the chosen mic
     // never delivers a buffer (e.g. AirPods routing failure, mic muted at
@@ -42,7 +44,8 @@ class TranscriptionController: ObservableObject {
     func startRecording() {
         guard !isRecording else { return }
 
-        activeBackend = UserDefaults.standard.string(forKey: "transcriptionBackend") ?? "apple"
+        activeBackend  = UserDefaults.standard.string(forKey: "transcriptionBackend") ?? "apple"
+        activeLanguage = DictationLanguage.selected
 
         if activeBackend == "deepgram" {
             requestMicThen { [weak self] in self?.launchDeepgram() }
@@ -129,7 +132,7 @@ class TranscriptionController: ObservableObject {
         isRecording        = true
 
         let apiKey = (try? KeychainStore.string(forKey: SecretsStore.Keys.deepgramApiKey)) ?? ""
-        deepgramClient = DeepgramClient(apiKey: apiKey)
+        deepgramClient = DeepgramClient(apiKey: apiKey, language: activeLanguage.deepgramCode)
 
         deepgramClient?.onTranscript = { [weak self] text, isFinal in
             Task { @MainActor in
@@ -160,7 +163,20 @@ class TranscriptionController: ObservableObject {
         isRecording    = true
 
         let model = UserDefaults.standard.string(forKey: "whisperKitModel") ?? WhisperKitClient.defaultModel
-        let client = WhisperKitClient(model: model)
+
+        // ".en" decode models can only emit English — recording Spanish into
+        // one yields garbage, so refuse up front with a way out. The tray
+        // menu only offers ready languages; this guards direct settings edits.
+        if !activeLanguage.isEnglish && model.hasSuffix(".en") {
+            isRecording = false
+            DebugLog.shared.log(icon: "🟣", label: "WhisperKit language mismatch",
+                                value: "\(activeLanguage.id) needs a multilingual model, have \(model)",
+                                ok: false)
+            onAudioFailure?("\(activeLanguage.label) dictation needs a multilingual WhisperKit model — \(WhisperKitClient.displayName(for: model)) is English-only. Pick one in Settings → Models, or switch the input language in the tray menu.")
+            return
+        }
+
+        let client = WhisperKitClient(model: model, language: activeLanguage.whisperCode)
         whisperClient = client
 
         client.onTranscript    = { [weak self] text, _ in Task { @MainActor in self?.liveTranscript = text } }
@@ -182,7 +198,7 @@ class TranscriptionController: ObservableObject {
         liveTranscript  = ""
         isRecording     = true
 
-        appleClient = AppleSpeechClient()
+        appleClient = AppleSpeechClient(language: activeLanguage)
         appleClient?.onTranscript    = { [weak self] text, _ in Task { @MainActor in self?.liveTranscript = text } }
         appleClient?.onLevelUpdate   = { [weak self] level  in Task { @MainActor in self?.handleLevel(level) } }
         appleClient?.onSpectrumUpdate = { [weak self] bins  in Task { @MainActor in self?.spectrumBins = bins } }
@@ -200,6 +216,11 @@ class TranscriptionController: ObservableObject {
         do {
             try appleClient?.start()
             startAudioWatchdog(deviceLabel: currentDeviceLabel())
+        } catch AppleSpeechError.languagePackMissing(let lang) {
+            DebugLog.shared.log(icon: "🍎", label: "Apple Speech language pack missing",
+                                value: lang.id, ok: false)
+            isRecording = false
+            onAudioFailure?("\(lang.label) isn't downloaded for Apple dictation. Add it in System Settings → Keyboard → Dictation, or switch to the WhisperKit engine in Settings → Models.")
         } catch {
             DebugLog.shared.log(icon: "🍎", label: "Apple Speech failed", value: "\(error)", ok: false)
             isRecording = false

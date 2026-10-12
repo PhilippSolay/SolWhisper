@@ -256,13 +256,16 @@ struct WhisperKitModelPicker: View {
     // base.en — its repo folder ships duplicate .mlpackage copies.
     private func modelLabel(for model: String) -> String {
         switch model {
-        case "tiny.en":  return "tiny.en — 145 MB · fastest, lower accuracy"
-        case "base.en":  return "base.en — 139 MB · balanced (default)"
-        case "small.en": return "small.en — 463 MB · better accuracy"
+        case "tiny.en":  return "tiny.en — 145 MB · fastest, lower accuracy · English only"
+        case "tiny":     return "tiny — 77 MB · fastest, lower accuracy · multilingual"
+        case "base.en":  return "base.en — 139 MB · balanced (default) · English only"
+        case "base":     return "base — 147 MB · balanced · multilingual"
+        case "small.en": return "small.en — 463 MB · better accuracy · English only"
+        case "small":    return "small — 486 MB · better accuracy · multilingual"
         case "large-v3-v20240930_626MB":
-            return "large-v3-turbo (compressed) — 597 MB · near-best accuracy"
+            return "large-v3-turbo (compressed) — 597 MB · near-best accuracy · multilingual"
         case "large-v3-v20240930":
-            return "large-v3-turbo — 1.5 GB · best accuracy"
+            return "large-v3-turbo — 1.5 GB · best accuracy · multilingual"
         default:         return model
         }
     }

@@ -78,6 +78,24 @@ final class AppleSpeechClientTests: XCTestCase {
             "small.en")
     }
 
+    func testRescueModelSkipsEnglishOnlyModelsForNonEnglish() {
+        // Spanish session: the preferred model is on disk but English-only —
+        // rescue must skip past it to a multilingual candidate.
+        XCTAssertEqual(
+            AppleSpeechClient.rescueModel(preferred: "base.en", english: false,
+                                          isDownloaded: { $0 == "base.en" || $0 == "base" }),
+            "base")
+        // Only .en models downloaded → no usable rescue for Spanish.
+        XCTAssertNil(
+            AppleSpeechClient.rescueModel(preferred: "base.en", english: false,
+                                          isDownloaded: { $0.hasSuffix(".en") }))
+        // English sessions keep the legacy preference order.
+        XCTAssertEqual(
+            AppleSpeechClient.rescueModel(preferred: "base.en", english: true,
+                                          isDownloaded: { $0 == "base.en" }),
+            "base.en")
+    }
+
     func testWriteBuffersRoundTrip() throws {
         let format = try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                                  sampleRate: 44_100,

@@ -91,6 +91,22 @@ final class WhisperKitModelStateTests: XCTestCase {
         XCTAssertTrue(WhisperKitClient.supportedModels.contains("large-v3-v20240930_626MB"))
     }
 
+    func testSupportedModelsIncludeMultilingualVariants() {
+        for m in ["tiny", "base", "small"] {
+            XCTAssertTrue(WhisperKitClient.supportedModels.contains(m),
+                          "\(m): multilingual checkpoint missing from the picker list")
+        }
+    }
+
+    func testBareMultilingualVariantIsDistinctFromEnglishFolder() throws {
+        _ = try makeModelFolder(named: "openai_whisper-base.en", complete: true)
+        XCTAssertFalse(WhisperKitClient.isModelDownloaded("base", in: tempRoot),
+                       "base.en on disk must not satisfy the multilingual 'base'")
+        _ = try makeModelFolder(named: "openai_whisper-base", complete: true)
+        XCTAssertTrue(WhisperKitClient.isModelDownloaded("base", in: tempRoot))
+        XCTAssertTrue(WhisperKitClient.isModelDownloaded("base.en", in: tempRoot))
+    }
+
     func testDisplayNameMapsTurboIDs() {
         XCTAssertEqual(WhisperKitClient.displayName(for: "large-v3-v20240930"),
                        "large-v3-turbo")

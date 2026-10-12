@@ -9,7 +9,7 @@ struct SummaryGenerator {
 
     /// Default to Claude Sonnet 200k via OpenRouter for cloud users — handles
     /// up to ~12-hour meetings in one shot. Per-skill overrides win if set.
-    static let defaultCloudModel = "anthropic/claude-3-5-sonnet"
+    static let defaultCloudModel = "anthropic/claude-sonnet-5.5"
     static let defaultLocalModel = "gemma-3"
 
     func generate(meeting: Meeting,

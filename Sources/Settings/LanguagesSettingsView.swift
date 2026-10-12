@@ -4,9 +4,10 @@ import AppKit
 import Translation
 #endif
 
-/// Manages the on-device Apple translation language packs used by the Translate
-/// and Voice Translate features. Each curated language shows its status and a
-/// Download (or Remove) action.
+/// The Languages pane: dictation input language (selection + readiness, see
+/// `DictationLanguagesSection`) above the on-device Apple translation packs
+/// used by Translate and Voice Translate. Each curated translation language
+/// shows its status and a Download (or Remove) action.
 ///
 /// macOS exposes an API to *download* a pack (by preparing a translation for the
 /// pair), but NOT to delete one — removal is only available in System Settings,
@@ -30,6 +31,7 @@ struct LanguagesSettingsView: View {
 
     var body: some View {
         Form {
+            DictationLanguagesSection()
             if supportsAppleTranslation {
                 Section {
                     ForEach(TranslationLanguage.curated) { lang in

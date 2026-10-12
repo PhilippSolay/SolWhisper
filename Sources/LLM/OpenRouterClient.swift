@@ -81,16 +81,24 @@ class OpenRouterClient {
 
     // MARK: - Prompt construction
 
-    private static func buildSystemPrompt() -> String {
+    /// Internal (not private) so prompt-shape tests can assert the language
+    /// rules without an LLM round-trip.
+    static func buildSystemPrompt() -> String {
         let removeFiller   = UserDefaults.standard.bool(forKey: "polishRemoveFiller")
         let fixPunctuation = UserDefaults.standard.bool(forKey: "polishFixPunctuation")
         let fixGrammar     = UserDefaults.standard.bool(forKey: "polishFixGrammar")
+        let language       = DictationLanguage.selected
 
         var activeRules: [String] = []
-        if removeFiller   { activeRules.append("- Remove filler words (um, uh, like, you know, basically, I mean, right, well).") }
+        // Non-English dictation: pin the language so "fix grammar" can't
+        // drift into rewriting (or translating) the text as English.
+        if !language.isEnglish {
+            activeRules.append("- The transcript is in \(language.label). Clean it in that language — NEVER translate it.")
+        }
+        if removeFiller   { activeRules.append("- Remove filler words and hesitation sounds (English: um, uh, like, you know, basically, I mean, right, well; Spanish: eh, este, o sea, pues; French: euh, ben, genre — and the equivalents in the transcript's language).") }
         if fixPunctuation { activeRules.append("- Fix punctuation and capitalization.") }
         if fixGrammar     { activeRules.append("- Fix obvious grammar errors, but keep the speaker's voice.") }
-        activeRules.append("- Replace dictation commands with symbols: \"period\" → . , \"comma\" → , , \"semicolon\" → ; , \"colon\" → : , \"question mark\" → ? , \"exclamation point\" → ! , \"new line\" → line break.")
+        activeRules.append("- Replace spoken punctuation commands with symbols, in the transcript's language: \"period\"/\"punto\"/\"point\" → . , \"comma\"/\"coma\"/\"virgule\" → , , \"semicolon\" → ; , \"colon\" → : , \"question mark\" → ? , \"exclamation point\" → ! , \"new line\"/\"nueva línea\"/\"à la ligne\" → line break.")
         activeRules.append("- Keep every substantive word. Never rephrase, summarize, or add words.")
 
         let rulesBlock = activeRules.joined(separator: "\n")
